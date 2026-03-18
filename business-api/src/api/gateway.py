@@ -9,7 +9,7 @@ This API runs on local/terminal and handles:
 """
 
 from contextlib import asynccontextmanager
-from typing import Optional
+from typing import Optional, Union
 import os
 import uuid
 import asyncio
@@ -18,7 +18,9 @@ import secrets
 
 from fastapi import FastAPI, Request, HTTPException, status, Depends
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.security import APIKeyHeader, HTTPBearer
+from fastapi.security import APIKeyHeader, HTTPBearer, HTTPAuthorizationCredentials
+from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.responses import Response
 import redis
 
 # JWT imports
@@ -29,7 +31,7 @@ except ImportError:
     JWT_AVAILABLE = False
 
 
-# Security
+# Security - re-export from auth module
 API_KEY_HEADER = APIKeyHeader(name="X-API-Key", auto_error=False)
 BEARER_TOKEN = HTTPBearer(auto_error=False)
 
@@ -39,6 +41,9 @@ if not JWT_SECRET_KEY:
     raise ValueError("JWT_SECRET_KEY environment variable must be set")
 JWT_ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 30
+
+# API Key settings for service-to-service authentication
+BUSINESS_API_KEY = os.getenv("BUSINESS_API_KEY", "default-business-api-key")
 
 # Redis settings
 REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379/0")
@@ -115,43 +120,51 @@ app.add_middleware(
 )
 
 
+# ==================== Security Middleware ====================
+
+class BodySizeLimitMiddleware(BaseHTTPMiddleware):
+    """Middleware to limit request body size."""
+    MAX_BODY_SIZE = 10 * 1024 * 1024  # 10MB
+
+    async def dispatch(self, request: Request, call_next):
+        if request.method in ["POST", "PUT", "PATCH"]:
+            content_length = request.headers.get("content-length")
+            if content_length and int(content_length) > self.MAX_BODY_SIZE:
+                raise HTTPException(status_code=413, detail="Request body too large")
+        response = await call_next(request)
+        return response
+
+
+class SecurityHeadersMiddleware(BaseHTTPMiddleware):
+    """Middleware to add security headers."""
+
+    async def dispatch(self, request: Request, call_next):
+        response: Response = await call_next(request)
+        response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
+        response.headers["X-Content-Type-Options"] = "nosniff"
+        response.headers["X-Frame-Options"] = "DENY"
+        response.headers["X-XSS-Protection"] = "1; mode=block"
+        response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+        return response
+
+
+# Register security middlewares
+app.add_middleware(BodySizeLimitMiddleware)
+app.add_middleware(SecurityHeadersMiddleware)
+
+
 # ==================== Authentication ====================
+# Authentication is now handled by the auth.py module
 
-def create_access_token(data: dict) -> str:
-    """Create JWT access token."""
-    to_encode = data.copy()
-    expire = datetime.now(timezone.utc) + timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
-    to_encode.update({"exp": expire, "type": "access"})
-    return jwt.encode(to_encode, JWT_SECRET_KEY, algorithm=JWT_ALGORITHM)
-
-
-def verify_token(token: str) -> dict:
-    """Verify JWT token."""
-    try:
-        payload = jwt.decode(token, JWT_SECRET_KEY, algorithms=[JWT_ALGORITHM])
-        return payload
-    except jwt.ExpiredSignatureError:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Token has expired"
-        )
-    except jwt.InvalidTokenError:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid token"
-        )
-
-
-async def get_current_user(
-    credentials = Depends(BEARER_TOKEN)
-):
-    """Get current user from token."""
-    if not JWT_AVAILABLE:
-        return {"user_id": "anonymous"}
-
-    token = credentials.credentials
-    payload = verify_token(token)
-    return payload
+from .auth import (
+    get_current_user,
+    get_optional_user,
+    require_role,
+    CurrentUser,
+    create_access_token,
+    verify_token,
+    verify_api_key,
+)
 
 
 # ==================== Routes ====================

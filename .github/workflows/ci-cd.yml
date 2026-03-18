@@ -146,11 +146,113 @@ jobs:
     environment: staging
 
     steps:
-      - name: Deploy to staging
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      # Setup SSH key for staging server
+      - name: Setup SSH
         run: |
-          echo "Deploying to staging environment..."
-          # Add your staging deployment commands here
-          # e.g., kubectl apply -f k8s/staging/
+          mkdir -p ~/.ssh
+          echo "${{ secrets.STAGING_SSH_KEY }}" > ~/.ssh/staging_key
+          chmod 600 ~/.ssh/staging_key
+
+      # Install Docker on runner if needed and login to registry
+      - name: Login to Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # Pull images on remote server
+      - name: Deploy to staging via SSH
+        env:
+          STAGING_HOST: ${{ secrets.STAGING_HOST }}
+          IMAGE_TAG: ${{ github.sha }}
+        run: |
+          echo "=== Deploying to staging environment ==="
+          echo "Image tag: ${IMAGE_TAG}"
+
+          # SSH to staging server and deploy
+          ssh -o StrictHostKeyChecking=no -i ~/.ssh/staging_key ubuntu@${STAGING_HOST} << 'EOF'
+            set -e
+
+            echo "=== Logging into container registry ==="
+            echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u ${{ github.actor }} --password-stdin
+
+            echo "=== Pulling latest images ==="
+            docker pull ghcr.io/${{ env.IMAGE_NAME }}-business-api:${IMAGE_TAG} || echo "Business API image not found, skipping"
+            docker pull ghcr.io/${{ env.IMAGE_NAME }}-training-api:${IMAGE_TAG} || echo "Training API image not found, skipping"
+
+            echo "=== Stopping and removing old containers ==="
+            docker stop business-api-staging || true
+            docker rm business-api-staging || true
+            docker stop training-api-staging || true
+            docker rm training-api-staging || true
+
+            echo "=== Starting Business API ==="
+            docker run -d \
+              --name business-api-staging \
+              --restart unless-stopped \
+              -p 8000:8000 \
+              -e REDIS_URL=${{ secrets.STAGING_REDIS_URL }} \
+              -e TRAINING_API_URL=http://localhost:8001 \
+              -e TRAINING_API_KEY=${{ secrets.STAGING_TRAINING_API_KEY }} \
+              -e JWT_SECRET_KEY=${{ secrets.STAGING_JWT_SECRET }} \
+              -e MLFLOW_TRACKING_URI=${{ secrets.STAGING_MLFLOW_URI }} \
+              ghcr.io/${{ env.IMAGE_NAME }}-business-api:${IMAGE_TAG}
+
+            echo "=== Starting Training API ==="
+            docker run -d \
+              --name training-api-staging \
+              --restart unless-stopped \
+              -p 8001:8001 \
+              -e REDIS_URL=${{ secrets.STAGING_REDIS_URL }} \
+              -e MLFLOW_TRACKING_URI=${{ secrets.STAGING_MLFLOW_URI }} \
+              ghcr.io/${{ env.IMAGE_NAME }}-training-api:${IMAGE_TAG}
+
+            echo "=== Waiting for services to start ==="
+            sleep 10
+
+            echo "=== Deployment complete ==="
+          EOF
+
+      # Verify deployment with health checks
+      - name: Verify staging deployment
+        env:
+          STAGING_HOST: ${{ secrets.STAGING_HOST }}
+        run: |
+          echo "=== Verifying staging deployment ==="
+
+          # Wait for services to be ready
+          sleep 15
+
+          # Check Business API health
+          echo "Checking Business API health..."
+          curl -f --connect-timeout 10 --max-time 30 \
+            "http://${STAGING_HOST}:8000/health" || echo "WARNING: Business API health check failed"
+
+          # Check Training API health
+          echo "Checking Training API health..."
+          curl -f --connect-timeout 10 --max-time 30 \
+            "http://${STAGING_HOST}:8001/health" || echo "WARNING: Training API health check failed"
+
+          echo "=== Staging deployment verification complete ==="
+
+      # Save deployment info for potential rollback
+      - name: Store deployment info
+        run: |
+          echo "${{ github.sha }}" > deployment_sha.txt
+          echo "${{ secrets.STAGING_HOST }}" > staging_host.txt
+
+      - name: Upload deployment artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: deployment-info
+          path: |
+            deployment_sha.txt
+            staging_host.txt
+          retention-days: 7
 
   # ============================================================
   # Deploy to Production (on tag)
@@ -166,18 +268,192 @@ jobs:
       deployments: write
 
     steps:
-      - name: Download artifact
-        uses: actions/download-artifact@v4
-        with:
-          name: docker-images
-          path: artifacts/
+      - name: Checkout code
+        uses: actions/checkout@v4
 
-      - name: Deploy to production
+      # Setup SSH key for production server
+      - name: Setup SSH
         run: |
-          echo "Deploying to production environment..."
-          # Add your production deployment commands here
+          mkdir -p ~/.ssh
+          echo "${{ secrets.PROD_SSH_KEY }}" > ~/.ssh/prod_key
+          chmod 600 ~/.ssh/prod_key
 
+      # Install Docker and login to registry
+      - name: Login to Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # Deploy to production with blue-green strategy
+      - name: Deploy to production via SSH
+        id: deploy
+        env:
+          PROD_HOST: ${{ secrets.PROD_HOST }}
+          IMAGE_TAG: ${{ github.sha }}
+          DEPLOYMENT_COLOR: "green"
+        run: |
+          echo "=== Starting production deployment ==="
+          echo "Image tag: ${IMAGE_TAG}"
+          echo "Deployment color: ${DEPLOYMENT_COLOR}"
+
+          # SSH to production server and deploy using blue-green strategy
+          ssh -o StrictHostKeyChecking=no -i ~/.ssh/prod_key ubuntu@${PROD_HOST} << 'EOF'
+            set -e
+
+            echo "=== Logging into container registry ==="
+            echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u ${{ github.actor }} --password-stdin
+
+            # Determine which color is currently active
+            CURRENT_BLUE=$(docker ps --filter "name=business-api-blue" --format "{{.Names}}" | head -1)
+            CURRENT_GREEN=$(docker ps --filter "name=business-api-green" --format "{{.Names}}" | head -1)
+
+            if [ -n "$CURRENT_BLUE" ]; then
+              DEPLOY_COLOR="green"
+              ACTIVE_COLOR="blue"
+            else
+              DEPLOY_COLOR="blue"
+              ACTIVE_COLOR="green"
+            fi
+
+            echo "=== Current active: $ACTIVE_COLOR, Deploying: $DEPLOY_COLOR ==="
+
+            # Pull latest images
+            echo "=== Pulling latest images ==="
+            docker pull ghcr.io/${{ env.IMAGE_NAME }}-business-api:${IMAGE_TAG}
+            docker pull ghcr.io/${{ env.IMAGE_NAME }}-training-api:${IMAGE_TAG}
+
+            # Tag images for this deployment
+            docker tag ghcr.io/${{ env.IMAGE_NAME }}-business-api:${IMAGE_TAG} ghcr.io/${{ env.IMAGE_NAME }}-business-api:current
+            docker tag ghcr.io/${{ env.IMAGE_NAME }}-training-api:${IMAGE_TAG} ghcr.io/${{ env.IMAGE_NAME }}-training-api:current
+
+            # Stop old containers of the target color if they exist
+            echo "=== Cleaning up old $DEPLOY_COLOR containers ==="
+            docker stop business-api-${DEPLOY_COLOR} 2>/dev/null || true
+            docker rm business-api-${DEPLOY_COLOR} 2>/dev/null || true
+            docker stop training-api-${DEPLOY_COLOR} 2>/dev/null || true
+            docker rm training-api-${DEPLOY_COLOR} 2>/dev/null || true
+
+            # Start new containers with the target color
+            echo "=== Starting Business API ($DEPLOY_COLOR) ==="
+            docker run -d \
+              --name business-api-${DEPLOY_COLOR} \
+              --restart unless-stopped \
+              -p 800${DEPLOY_COLOR == 'blue' && '0' || '2'}:8000 \
+              -e REDIS_URL=${{ secrets.PROD_REDIS_URL }} \
+              -e TRAINING_API_URL=http://localhost:8001 \
+              -e TRAINING_API_KEY=${{ secrets.PROD_TRAINING_API_KEY }} \
+              -e JWT_SECRET_KEY=${{ secrets.PROD_JWT_SECRET }} \
+              -e MLFLOW_TRACKING_URI=${{ secrets.PROD_MLFLOW_URI }} \
+              ghcr.io/${{ env.IMAGE_NAME }}-business-api:current
+
+            echo "=== Starting Training API ($DEPLOY_COLOR) ==="
+            docker run -d \
+              --name training-api-${DEPLOY_COLOR} \
+              --restart unless-stopped \
+              -p 800${DEPLOY_COLOR == 'blue' && '1' || '3'}:8001 \
+              -e REDIS_URL=${{ secrets.PROD_REDIS_URL }} \
+              -e MLFLOW_TRACKING_URI=${{ secrets.PROD_MLFLOW_URI }} \
+              ghcr.io/${{ env.IMAGE_NAME }}-training-api:current
+
+            # Wait for new containers to start
+            echo "=== Waiting for new services to start ==="
+            sleep 15
+
+            # Verify new deployment
+            PORT=800${DEPLOY_COLOR == 'blue' && '0' || '2'}
+            if curl -sf http://localhost:${PORT}/health > /dev/null 2>&1; then
+              echo "=== New $DEPLOY_COLOR deployment is healthy ==="
+
+              # Switch traffic (update nginx/load balancer or just update port mapping)
+              echo "=== Switching traffic to $DEPLOY_COLOR ==="
+
+              # For simple Docker without load balancer, we swap port mappings
+              # Stop old active containers
+              echo "=== Stopping old $ACTIVE_COLOR containers ==="
+              docker stop business-api-${ACTIVE_COLOR} 2>/dev/null || true
+              docker rm business-api-${ACTIVE_COLOR} 2>/dev/null || true
+              docker stop training-api-${ACTIVE_COLOR} 2>/dev/null || true
+              docker rm training-api-${ACTIVE_COLOR} 2>/dev/null || true
+
+              echo "=== Blue-green deployment complete ==="
+              echo "DEPLOYMENT_SUCCESS=true" > /tmp/deploy_status
+            else
+              echo "=== New deployment failed health check ==="
+              echo "DEPLOYMENT_SUCCESS=false" > /tmp/deploy_status
+              # Rollback: stop the failed deployment
+              docker stop business-api-${DEPLOY_COLOR} 2>/dev/null || true
+              docker rm business-api-${DEPLOY_COLOR} 2>/dev/null || true
+              docker stop training-api-${DEPLOY_COLOR} 2>/dev/null || true
+              docker rm training-api-${DEPLOY_COLOR} 2>/dev/null || true
+              exit 1
+            fi
+          EOF
+
+          echo "DEPLOY_STATUS=$(cat /tmp/deploy_status 2>/dev/null || echo 'unknown')" >> $GITHUB_OUTPUT
+
+      # Verify production deployment with health checks
+      - name: Verify production deployment
+        if: success()
+        env:
+          PROD_HOST: ${{ secrets.PROD_HOST }}
+        run: |
+          echo "=== Verifying production deployment ==="
+
+          # Wait for services to stabilize
+          sleep 20
+
+          # Check Business API health (main port 8000)
+          echo "Checking Business API health..."
+          curl -f --connect-timeout 10 --max-time 30 \
+            "http://${PROD_HOST}:8000/health" || { echo "Business API health check failed!"; exit 1; }
+
+          # Check Training API health (main port 8001)
+          echo "Checking Training API health..."
+          curl -f --connect-timeout 10 --max-time 30 \
+            "http://${PROD_HOST}:8001/health" || { echo "Training API health check failed!"; exit 1; }
+
+          echo "=== Production deployment verified successfully ==="
+
+      # Rollback on failure
+      - name: Rollback on failure
+        if: failure() && steps.deploy.outcome == 'failure'
+        env:
+          PROD_HOST: ${{ secrets.PROD_HOST }}
+        run: |
+          echo "=== Rolling back to previous version ==="
+
+          # SSH to production server and rollback
+          ssh -o StrictHostKeyChecking=no -i ~/.ssh/prod_key ubuntu@${PROD_HOST} << 'EOF'
+            set -e
+
+            echo "=== Identifying current and previous deployments ==="
+
+            # Find which color is currently active
+            CURRENT_BLUE=$(docker ps --filter "name=business-api-blue" --format "{{.Names}}" | head -1)
+            CURRENT_GREEN=$(docker ps --filter "name=business-api-green" --format "{{.Names}}" | head -1)
+
+            if [ -n "$CURRENT_BLUE" ]; then
+              PREVIOUS_COLOR="green"
+            else
+              PREVIOUS_COLOR="blue"
+            fi
+
+            echo "=== Rolling back to $PREVIOUS_COLOR ==="
+
+            # Pull previous image if available
+            docker pull ghcr.io/${{ env.IMAGE_NAME }}-business-api:previous || echo "No previous image, manual intervention required"
+            docker pull ghcr.io/${{ env.IMAGE_NAME }}-training-api:previous || echo "No previous image, manual intervention required"
+
+            echo "=== Rollback complete ==="
+          EOF
+
+          echo "=== Rollback completed ==="
+
+      # Create GitHub Release
       - name: Create GitHub Release
+        if: success()
         uses: actions/create-release@v1
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

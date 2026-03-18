@@ -8,8 +8,11 @@ Contains:
 """
 
 from typing import Optional, List
-from fastapi import APIRouter, HTTPException, BackgroundTasks, status
+from fastapi import APIRouter, HTTPException, BackgroundTasks, status, Depends, Request
 from pydantic import BaseModel, Field
+
+# Import authentication from auth module
+from .auth import get_current_user, CurrentUser, check_rate_limit
 
 
 # ==================== Request/Response Models ====================
@@ -51,7 +54,10 @@ agent_router = APIRouter()
 @agent_router.post("/task", response_model=AgentTaskResponse)
 async def submit_agent_task(
     request: AgentTaskRequest,
-    background_tasks: BackgroundTasks
+    background_tasks: BackgroundTasks,
+    http_request: Request,
+    current_user: CurrentUser = Depends(get_current_user),
+    _: None = Depends(check_rate_limit)
 ):
     """
     Submit a task to the CrewAI agent system.
@@ -61,6 +67,8 @@ async def submit_agent_task(
     2. Generate synthetic data (if needed)
     3. Train the model
     4. Export to target platform
+
+    Requires authentication.
     """
     import uuid
 
@@ -89,9 +97,16 @@ async def submit_agent_task(
 
 
 @agent_router.get("/task/{task_id}", response_model=AgentStatusResponse)
-async def get_agent_task_status(task_id: str):
+async def get_agent_task_status(
+    task_id: str,
+    request: Request,
+    current_user: CurrentUser = Depends(get_current_user),
+    _: None = Depends(check_rate_limit)
+):
     """
     Get agent task status.
+
+    Requires authentication.
     """
     # TODO: Implement status tracking
     return AgentStatusResponse(
@@ -102,9 +117,16 @@ async def get_agent_task_status(task_id: str):
 
 
 @agent_router.post("/task/{task_id}/cancel")
-async def cancel_agent_task(task_id: str):
+async def cancel_agent_task(
+    task_id: str,
+    request: Request,
+    current_user: CurrentUser = Depends(get_current_user),
+    _: None = Depends(check_rate_limit)
+):
     """
     Cancel a running agent task.
+
+    Requires authentication.
     """
     return {
         "task_id": task_id,

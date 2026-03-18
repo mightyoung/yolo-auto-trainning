@@ -1,0 +1,29 @@
+# DVC Pipeline Configuration
+
+# DVC (Data Version Control) pipeline for dataset versioning and processing
+
+stages:
+  prepare_data:
+    cmd: python src/data/dvc.py prepare
+    deps:
+      - src/data/dvc.py
+    params:
+      - data.raw_dir
+      - data.processed_dir
+    outs:
+      - data/processed
+
+  validate_data:
+    cmd: python src/data/dvc.py validate
+    deps:
+      - data/processed
+    params:
+      - quality.min_images
+      - quality.min_classes
+
+# DVC Configuration
+# For remote storage, configure with: dvc remote add -d myremote s3://bucket/path
+# Or use GCS: dvc remote add -d myremote gs://bucket/path
+
+vars:
+  - params.yaml

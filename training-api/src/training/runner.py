@@ -9,9 +9,14 @@ Based on Ultralytics official best practices:
 from pathlib import Path
 from typing import Dict, Any, Optional, Tuple
 from dataclasses import dataclass
+from datetime import datetime
 import json
+import logging
 
+import torch
 from ultralytics import YOLO
+
+from src.training.mlflow_tracker import MLflowTracker
 
 from .config import (
     TrainingConfig,
@@ -33,6 +38,27 @@ class TrainingResult:
     metrics: Optional[Dict[str, float]] = None
     best_params: Optional[Dict[str, float]] = None
     error: Optional[str] = None
+
+
+def setup_gpu_memory() -> None:
+    """Setup GPU memory management to prevent OOM errors."""
+    if torch.cuda.is_available():
+        # Clear cache before training
+        torch.cuda.empty_cache()
+
+        # Set memory growth limit to 80% of available GPU memory
+        for i in range(torch.cuda.device_count()):
+            try:
+                torch.cuda.set_per_process_memory_fraction(0.8, device=i)
+            except Exception:
+                pass  # Gracefully handle if not supported
+
+
+def cleanup_gpu_memory() -> None:
+    """Cleanup GPU memory after training."""
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+        torch.cuda.synchronize()
 
 
 class YOLOTrainer:
@@ -111,6 +137,38 @@ class YOLOTrainer:
         config = config or DEFAULT_TRAINING_CONFIG
         epochs = epochs or config.epochs
 
+        # Setup GPU memory management
+        setup_gpu_memory()
+
+        # Initialize MLflow tracker with graceful degradation
+        tracker = None
+        mlflow_enabled = True
+        try:
+            tracker = MLflowTracker(experiment_name="yolo-training")
+            tracker.start_run(
+                run_name=f"train_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+            )
+        except Exception as e:
+            mlflow_enabled = False
+            logging.warning(f"MLflow tracking disabled: {e}")
+
+        # Log training parameters
+        if tracker and mlflow_enabled:
+            try:
+                tracker.log_params({
+                    "model": self.model_name,
+                    "epochs": epochs,
+                    "data_yaml": str(data_yaml),
+                    "batch_size": config.batch,
+                    "image_size": config.imgsz,
+                    "lr0": config.lr0,
+                    "lrf": config.lrf,
+                    "momentum": config.momentum,
+                    "weight_decay": config.weight_decay,
+                })
+            except Exception as e:
+                logging.warning(f"Failed to log parameters to MLflow: {e}")
+
         model = YOLO(f"{self.model_name}.pt")
 
         try:
@@ -125,6 +183,30 @@ class YOLOTrainer:
                 **config.to_dict(),
             )
 
+            # Log metrics to MLflow
+            if tracker and mlflow_enabled:
+                try:
+                    if hasattr(results, 'results_dict') and results.results_dict:
+                        tracker.log_metrics(results.results_dict)
+                except Exception as e:
+                    logging.warning(f"Failed to log metrics to MLflow: {e}")
+
+            # Log model artifact
+            if tracker and mlflow_enabled:
+                try:
+                    model_path = Path(results.save_dir) / "weights" / "best.pt"
+                    if model_path.exists():
+                        tracker.log_artifact(str(model_path))
+                except Exception as e:
+                    logging.warning(f"Failed to log model artifact to MLflow: {e}")
+
+            # End MLflow run
+            if tracker and mlflow_enabled:
+                try:
+                    tracker.end_run(status="FINISHED")
+                except Exception as e:
+                    logging.warning(f"Failed to end MLflow run: {e}")
+
             return TrainingResult(
                 status="completed",
                 model_path=Path(results.save_dir) / "weights" / "best.pt",
@@ -134,10 +216,20 @@ class YOLOTrainer:
                 },
             )
         except Exception as e:
+            # End MLflow run with failed status
+            if tracker and mlflow_enabled:
+                try:
+                    tracker.end_run(status="FAILED")
+                except Exception:
+                    pass
+
             return TrainingResult(
                 status="failed",
                 error=str(e),
             )
+        finally:
+            # Always cleanup GPU memory
+            cleanup_gpu_memory()
 
     def tune(
         self,
@@ -232,62 +324,6 @@ class YOLOTrainer:
             "platform": platform,
             "fp16": platform_config.get("half", config.half),
         }
-
-
-class KnowledgeDistillationTrainer:
-    """Knowledge distillation trainer using official teacher API."""
-
-    def __init__(
-        self,
-        teacher_model: str = "yolo11m",
-        student_model: str = "yolo11n",
-    ):
-        self.teacher_model_name = teacher_model
-        self.student_model_name = student_model
-
-    def train(
-        self,
-        data_yaml: Path,
-        epochs: int = 100,
-    ) -> TrainingResult:
-        """
-        Train with knowledge distillation.
-
-        Args:
-            data_yaml: Path to dataset YAML
-            epochs: Number of epochs
-
-        Returns:
-            TrainingResult with distilled model
-        """
-        # Load teacher model
-        teacher = YOLO(f"{self.teacher_model_name}.pt")
-        student = YOLO(f"{self.student_model_name}.pt")
-
-        try:
-            # Train student with teacher
-            results = student.train(
-                data=str(data_yaml),
-                epochs=epochs,
-                teacher=teacher.model,  # Official teacher parameter
-                distillation_loss="cwd",  # Channel-wise distillation
-                project="./runs/distill",
-                name="student",
-                verbose=False,
-            )
-
-            return TrainingResult(
-                status="completed",
-                model_path=Path(results.save_dir) / "weights" / "best.pt",
-                metrics={
-                    "mAP50": results.results_dict.get("metrics/mAP50(B)", 0),
-                },
-            )
-        except Exception as e:
-            return TrainingResult(
-                status="failed",
-                error=str(e),
-            )
 
 
 class TransferLearningTrainer:

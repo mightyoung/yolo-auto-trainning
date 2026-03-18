@@ -15,6 +15,30 @@ from dataclasses import dataclass
 
 from ultralytics import YOLO
 
+from training_api.src.deployment.validator import ModelValidator
+
+# Lazy imports for optional dependencies
+_paramiko = None
+_scp = None
+
+
+def _get_paramiko():
+    """Lazy load paramiko."""
+    global _paramiko
+    if _paramiko is None:
+        import paramiko
+        _paramiko = paramiko
+    return _paramiko
+
+
+def _get_scp():
+    """Lazy load scp."""
+    global _scp
+    if _scp is None:
+        from scp import SCPClient
+        _scp = SCPClient
+    return _scp
+
 
 @dataclass
 class ExportResult:
@@ -123,11 +147,22 @@ class ModelExporter:
                 **export_kwargs,
             )
 
-            model_size_mb = Path(export_path).stat().st_size / (1024 * 1024)
+            model_path = Path(export_path)
+
+            # Validate exported model
+            validation = ModelValidator.validate_model_file(model_path)
+            if not validation["valid"]:
+                return ExportResult(
+                    status="failed",
+                    error=f"Model validation failed: {validation['error']}",
+                    platform=platform,
+                )
+
+            model_size_mb = model_path.stat().st_size / (1024 * 1024)
 
             return ExportResult(
                 status="success",
-                model_path=Path(export_path),
+                model_path=model_path,
                 size_mb=model_size_mb,
                 format=config["format"],
                 platform=platform,
@@ -173,11 +208,22 @@ class ModelExporter:
                 exist_ok=True,
             )
 
-            model_size_mb = Path(export_path).stat().st_size / (1024 * 1024)
+            model_path = Path(export_path)
+
+            # Validate exported model
+            validation = ModelValidator.validate_model_file(model_path)
+            if not validation["valid"]:
+                return ExportResult(
+                    status="failed",
+                    error=f"Model validation failed: {validation['error']}",
+                    platform=platform,
+                )
+
+            model_size_mb = model_path.stat().st_size / (1024 * 1024)
 
             return ExportResult(
                 status="success",
-                model_path=Path(export_path),
+                model_path=model_path,
                 size_mb=model_size_mb,
                 format=config["format"],
                 platform=f"{platform}_int8",
@@ -194,32 +240,129 @@ class ModelExporter:
 class EdgeDeployer:
     """Deploy models to edge devices."""
 
-    def __init__(self):
-        self.ssh_key_path = None
+    def __init__(self, ssh_key_path: Path = None):
+        self.ssh_key_path = ssh_key_path
 
     def deploy_to_jetson(
         self,
         model_path: Path,
         jetson_ip: str,
         jetson_user: str = "nvidia",
+        jetson_password: str = None,
+        remote_model_dir: str = "/home/nvidia/models",
     ) -> Dict[str, Any]:
         """
-        Deploy model to Jetson device via SCP.
+        Deploy model to Jetson device via SSH/SCP.
 
         Args:
-            model_path: Path to exported model
-            jetson_ip: Jetson IP address
-            jetson_user: Jetson username
+            model_path: Path to exported model file
+            jetson_ip: IP address of the Jetson device
+            jetson_user: Username for SSH login (default: "nvidia")
+            jetson_password: Password (if not using SSH key)
+            remote_model_dir: Remote directory to store models
 
         Returns:
-            Deployment result
+            Dict with deployment status and details
         """
-        # Placeholder - requires paramiko or subprocess
-        return {
-            "status": "pending",
-            "device": f"{jetson_user}@{jetson_ip}",
-            "model": str(model_path),
-        }
+        paramiko = _get_paramiko()
+        SCPClient = _get_scp()
+
+        model_path = Path(model_path)
+        if not model_path.exists():
+            return {
+                "status": "failed",
+                "error": f"Model file not found: {model_path}",
+            }
+
+        ssh = None
+        try:
+            # Create SSH client
+            ssh = paramiko.SSHClient()
+            ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+
+            # Connection parameters
+            connect_kwargs = {
+                "hostname": jetson_ip,
+                "username": jetson_user,
+                "timeout": 10,
+            }
+
+            # Use SSH key if provided, otherwise try password
+            if self.ssh_key_path and Path(self.ssh_key_path).exists():
+                connect_kwargs["key_filename"] = str(self.ssh_key_path)
+            elif jetson_password:
+                connect_kwargs["password"] = jetson_password
+            # Otherwise rely on SSH agent/default keys
+
+            ssh.connect(**connect_kwargs)
+
+            # Create remote directory if needed
+            stdin, stdout, stderr = ssh.exec_command(
+                f"mkdir -p {remote_model_dir}"
+            )
+            exit_status = stdout.channel.recv_exit_status()
+            if exit_status != 0:
+                error = stderr.read().decode() if stderr else "Unknown error"
+                ssh.close()
+                return {
+                    "status": "failed",
+                    "error": f"Failed to create remote directory: {error}",
+                }
+
+            # Use SCP to transfer the model file
+            with SCPClient(ssh.get_transport()) as scp_client:
+                scp_client.put(str(model_path), remote_model_dir)
+
+            # Verify deployment
+            model_name = model_path.name
+            stdin, stdout, stderr = ssh.exec_command(
+                f"ls -la {remote_model_dir}/{model_name}"
+            )
+            exit_status = stdout.channel.recv_exit_status()
+
+            ssh.close()
+
+            if exit_status == 0:
+                return {
+                    "status": "deployed",
+                    "device": f"{jetson_user}@{jetson_ip}",
+                    "model": f"{remote_model_dir}/{model_name}",
+                    "model_size": model_path.stat().st_size,
+                }
+            else:
+                return {
+                    "status": "verification_failed",
+                    "error": "Model file not found on remote device after transfer",
+                }
+
+        except paramiko.AuthenticationException:
+            if ssh:
+                ssh.close()
+            return {
+                "status": "failed",
+                "error": "Authentication failed. Check username/password or SSH key.",
+            }
+        except paramiko.SSHException as e:
+            if ssh:
+                ssh.close()
+            return {
+                "status": "failed",
+                "error": f"SSH error: {str(e)}",
+            }
+        except FileNotFoundError as e:
+            if ssh:
+                ssh.close()
+            return {
+                "status": "failed",
+                "error": f"SSH key not found: {str(e)}",
+            }
+        except Exception as e:
+            if ssh:
+                ssh.close()
+            return {
+                "status": "failed",
+                "error": f"Deployment failed: {str(e)}",
+            }
 
     def test_inference(
         self,

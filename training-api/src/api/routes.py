@@ -8,12 +8,30 @@ Contains internal endpoints for:
 - Model export management
 """
 
+import sys
+from pathlib import Path
+
+# Add project root to sys.path to access main src/ module
+# This allows training-api to import from src.training.mlflow_tracker, etc.
+_project_root = Path(__file__).parent.parent.parent.parent
+if str(_project_root) not in sys.path:
+    sys.path.insert(0, str(_project_root))
+
 import uuid
 from datetime import datetime
-from typing import Optional
+from typing import Optional, List
 
-from fastapi import APIRouter, HTTPException, Header, status, BackgroundTasks
+from fastapi import APIRouter, HTTPException, Header, status, BackgroundTasks, Depends, Request
 from pydantic import BaseModel, Field
+
+# Import verify_internal_api_key from gateway for timing-safe comparison
+import sys
+from pathlib import Path
+_project_root = Path(__file__).parent.parent.parent.parent
+if str(_project_root) not in sys.path:
+    sys.path.insert(0, str(_project_root))
+
+from training_api.src.api.gateway import verify_internal_api_key, check_rate_limit
 
 
 # ==================== Request/Response Models ====================
@@ -76,16 +94,18 @@ tasks_db = {}
 @router.post("/train/start")
 async def start_training(
     request: TrainStartRequest,
-    x_api_key: str = Header(None, alias="X-API-Key")
+    http_request: Request,
+    x_api_key: str = Header(..., alias="X-API-Key"),
+    _: None = Depends(check_rate_limit)
 ):
     """
     Start a training job on the GPU.
     """
     # Verify API key
-    if not x_api_key:
+    if not verify_internal_api_key(x_api_key):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="API key required"
+            detail="Invalid API key"
         )
 
     # Create task record
@@ -114,10 +134,22 @@ async def start_training(
 
 
 @router.get("/train/status/{task_id}", response_model=TrainStatusResponse)
-async def get_training_status(task_id: str):
+async def get_training_status(
+    task_id: str,
+    http_request: Request,
+    x_api_key: str = Header(..., alias="X-API-Key"),
+    _: None = Depends(check_rate_limit)
+):
     """
     Get training job status.
     """
+    # Verify API key
+    if not verify_internal_api_key(x_api_key):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid API key"
+        )
+
     if task_id not in tasks_db:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -139,10 +171,22 @@ async def get_training_status(task_id: str):
 
 
 @router.post("/train/cancel/{task_id}")
-async def cancel_training(task_id: str):
+async def cancel_training(
+    task_id: str,
+    http_request: Request,
+    x_api_key: str = Header(..., alias="X-API-Key"),
+    _: None = Depends(check_rate_limit)
+):
     """
     Cancel a training job.
     """
+    # Verify API key
+    if not verify_internal_api_key(x_api_key):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid API key"
+        )
+
     if task_id not in tasks_db:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -162,10 +206,22 @@ async def cancel_training(task_id: str):
 # ==================== HPO Endpoints ====================
 
 @router.post("/hpo/start")
-async def start_hpo(request: HPOStartRequest):
+async def start_hpo(
+    request: HPOStartRequest,
+    http_request: Request,
+    x_api_key: str = Header(..., alias="X-API-Key"),
+    _: None = Depends(check_rate_limit)
+):
     """
     Start an HPO job.
     """
+    # Verify API key
+    if not verify_internal_api_key(x_api_key):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid API key"
+        )
+
     task_id = request.task_id
     tasks_db[task_id] = {
         "task_id": task_id,
@@ -185,8 +241,20 @@ async def start_hpo(request: HPOStartRequest):
 
 
 @router.get("/hpo/status/{task_id}")
-async def get_hpo_status(task_id: str):
+async def get_hpo_status(
+    task_id: str,
+    http_request: Request,
+    x_api_key: str = Header(..., alias="X-API-Key"),
+    _: None = Depends(check_rate_limit)
+):
     """Get HPO job status."""
+    # Verify API key
+    if not verify_internal_api_key(x_api_key):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid API key"
+        )
+
     if task_id not in tasks_db:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -199,10 +267,22 @@ async def get_hpo_status(task_id: str):
 # ==================== Export Endpoints ====================
 
 @router.post("/export/start")
-async def start_export(request: ExportStartRequest):
+async def start_export(
+    request: ExportStartRequest,
+    http_request: Request,
+    x_api_key: str = Header(..., alias="X-API-Key"),
+    _: None = Depends(check_rate_limit)
+):
     """
     Start a model export job.
     """
+    # Verify API key
+    if not verify_internal_api_key(x_api_key):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid API key"
+        )
+
     task_id = request.task_id
     tasks_db[task_id] = {
         "task_id": task_id,
@@ -222,8 +302,20 @@ async def start_export(request: ExportStartRequest):
 
 
 @router.get("/export/status/{task_id}")
-async def get_export_status(task_id: str):
+async def get_export_status(
+    task_id: str,
+    http_request: Request,
+    x_api_key: str = Header(..., alias="X-API-Key"),
+    _: None = Depends(check_rate_limit)
+):
     """Get export job status."""
+    # Verify API key
+    if not verify_internal_api_key(x_api_key):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid API key"
+        )
+
     if task_id not in tasks_db:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -254,13 +346,25 @@ class AutoLabelResponse(BaseModel):
 
 
 @router.post("/label/submit")
-async def submit_labeling(request: AutoLabelRequest):
+async def submit_labeling(
+    request: AutoLabelRequest,
+    http_request: Request,
+    x_api_key: str = Header(..., alias="X-API-Key"),
+    _: None = Depends(check_rate_limit)
+):
     """
     Submit an auto-labeling job.
 
     Uses foundation models (GroundedSAM, etc.) to automatically
     label images in the input folder.
     """
+    # Verify API key
+    if not verify_internal_api_key(x_api_key):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid API key"
+        )
+
     task_id = request.task_id
 
     # Store task
@@ -288,8 +392,20 @@ async def submit_labeling(request: AutoLabelRequest):
 
 
 @router.get("/label/status/{task_id}")
-async def get_labeling_status(task_id: str):
+async def get_labeling_status(
+    task_id: str,
+    http_request: Request,
+    x_api_key: str = Header(..., alias="X-API-Key"),
+    _: None = Depends(check_rate_limit)
+):
     """Get auto-labeling job status."""
+    # Verify API key
+    if not verify_internal_api_key(x_api_key):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid API key"
+        )
+
     if task_id not in tasks_db:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -317,12 +433,24 @@ class DistillRequest(BaseModel):
 
 
 @router.post("/train/distill")
-async def start_distillation(request: DistillRequest):
+async def start_distillation(
+    request: DistillRequest,
+    http_request: Request,
+    x_api_key: str = Header(..., alias="X-API-Key"),
+    _: None = Depends(check_rate_limit)
+):
     """
     Start a model distillation job.
 
     Uses auto-labeled dataset to train a target model.
     """
+    # Verify API key
+    if not verify_internal_api_key(x_api_key):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid API key"
+        )
+
     task_id = request.task_id
     tasks_db[task_id] = {
         "task_id": task_id,
@@ -375,12 +503,23 @@ class ModelStageTransitionRequest(BaseModel):
 
 
 @router.get("/models/registry")
-async def list_registered_models():
+async def list_registered_models(
+    http_request: Request,
+    x_api_key: str = Header(..., alias="X-API-Key"),
+    _: None = Depends(check_rate_limit)
+):
     """
     List all registered models.
 
     Returns all models in the MLflow Model Registry.
     """
+    # Verify API key
+    if not verify_internal_api_key(x_api_key):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid API key"
+        )
+
     try:
         from src.training.mlflow_tracker import list_registered_models
         models = list_registered_models()
@@ -400,12 +539,24 @@ async def list_registered_models():
 
 
 @router.post("/models/registry")
-async def create_registered_model(request: ModelCreateRequest):
+async def create_registered_model(
+    request: ModelCreateRequest,
+    http_request: Request,
+    x_api_key: str = Header(..., alias="X-API-Key"),
+    _: None = Depends(check_rate_limit)
+):
     """
     Create a new registered model.
 
     Creates a new model entry in MLflow Model Registry.
     """
+    # Verify API key
+    if not verify_internal_api_key(x_api_key):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid API key"
+        )
+
     try:
         from src.training.mlflow_tracker import create_registered_model as create_model
         model = create_model(
@@ -427,7 +578,13 @@ async def create_registered_model(request: ModelCreateRequest):
 
 
 @router.get("/models/registry/{name}")
-async def get_model_info(name: str, stage: Optional[str] = None):
+async def get_model_info(
+    name: str,
+    stage: Optional[str] = None,
+    http_request: Request,
+    x_api_key: str = Header(..., alias="X-API-Key"),
+    _: None = Depends(check_rate_limit)
+):
     """
     Get model information and versions.
 
@@ -435,6 +592,13 @@ async def get_model_info(name: str, stage: Optional[str] = None):
         name: Registered model name
         stage: Optional stage filter (Staging, Production)
     """
+    # Verify API key
+    if not verify_internal_api_key(x_api_key):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid API key"
+        )
+
     try:
         from src.training.mlflow_tracker import get_latest_model_versions
         versions = get_latest_model_versions(name, stage)
@@ -457,13 +621,23 @@ async def get_model_info(name: str, stage: Optional[str] = None):
 @router.post("/models/registry/{name}/transition")
 async def transition_model_stage(
     name: str,
-    request: ModelStageTransitionRequest
+    request: ModelStageTransitionRequest,
+    http_request: Request,
+    x_api_key: str = Header(..., alias="X-API-Key"),
+    _: None = Depends(check_rate_limit)
 ):
     """
     Transition a model version to a different stage.
 
     Stages: Staging -> Production -> Archived
     """
+    # Verify API key
+    if not verify_internal_api_key(x_api_key):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid API key"
+        )
+
     try:
         from src.training.mlflow_tracker import transition_model_stage as transition
         result = transition(name, request.version, request.stage)
@@ -482,10 +656,23 @@ async def transition_model_stage(
 
 
 @router.delete("/models/registry/{name}/version/{version}")
-async def delete_model_version(name: str, version: int):
+async def delete_model_version(
+    name: str,
+    version: int,
+    http_request: Request,
+    x_api_key: str = Header(..., alias="X-API-Key"),
+    _: None = Depends(check_rate_limit)
+):
     """
     Delete a specific model version.
     """
+    # Verify API key
+    if not verify_internal_api_key(x_api_key):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid API key"
+        )
+
     try:
         from src.training.mlflow_tracker import delete_model_version as delete
         success = delete(name, version)
@@ -499,10 +686,22 @@ async def delete_model_version(name: str, version: int):
 
 
 @router.delete("/models/registry/{name}")
-async def delete_registered_model(name: str):
+async def delete_registered_model(
+    name: str,
+    http_request: Request,
+    x_api_key: str = Header(..., alias="X-API-Key"),
+    _: None = Depends(check_rate_limit)
+):
     """
     Delete a registered model and all its versions.
     """
+    # Verify API key
+    if not verify_internal_api_key(x_api_key):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid API key"
+        )
+
     try:
         from src.training.mlflow_tracker import delete_registered_model as delete
         success = delete(name)
@@ -544,7 +743,12 @@ class InferenceResponse(BaseModel):
 
 
 @router.post("/inference/predict", response_model=InferenceResponse)
-async def predict(request: InferenceRequest):
+async def predict(
+    request: InferenceRequest,
+    http_request: Request,
+    x_api_key: str = Header(..., alias="X-API-Key"),
+    _: None = Depends(check_rate_limit)
+):
     """
     Run real-time inference on an image.
 
@@ -553,6 +757,13 @@ async def predict(request: InferenceRequest):
     - Image URL
     - Base64 encoded image
     """
+    # Verify API key
+    if not verify_internal_api_key(x_api_key):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid API key"
+        )
+
     try:
         from src.inference.engine import get_inference_engine
 
@@ -579,12 +790,22 @@ async def predict_image(
     max_det: int = 300,
     device: str = "cuda:0",
     half: bool = False,
+    http_request: Request,
+    x_api_key: str = Header(..., alias="X-API-Key"),
+    _: None = Depends(check_rate_limit)
 ):
     """
     Run inference on uploaded image.
 
     Upload an image file for real-time inference.
     """
+    # Verify API key
+    if not verify_internal_api_key(x_api_key):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid API key"
+        )
+
     try:
         from src.inference.engine import get_inference_engine
 
@@ -600,12 +821,23 @@ async def predict_image(
 
 
 @router.get("/inference/stats")
-async def get_inference_stats():
+async def get_inference_stats(
+    http_request: Request,
+    x_api_key: str = Header(..., alias="X-API-Key"),
+    _: None = Depends(check_rate_limit)
+):
     """
     Get inference statistics.
 
     Returns metrics about inference performance.
     """
+    # Verify API key
+    if not verify_internal_api_key(x_api_key):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid API key"
+        )
+
     try:
         from src.inference.engine import get_inference_engine
 
@@ -618,12 +850,23 @@ async def get_inference_stats():
 
 
 @router.post("/inference/cache/clear")
-async def clear_inference_cache():
+async def clear_inference_cache(
+    http_request: Request,
+    x_api_key: str = Header(..., alias="X-API-Key"),
+    _: None = Depends(check_rate_limit)
+):
     """
     Clear the model cache.
 
     Frees up memory by removing cached models.
     """
+    # Verify API key
+    if not verify_internal_api_key(x_api_key):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid API key"
+        )
+
     try:
         from src.inference.engine import get_inference_engine
 

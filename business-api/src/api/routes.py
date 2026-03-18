@@ -13,9 +13,93 @@ from typing import Optional, List
 from datetime import datetime
 import uuid
 import asyncio
+import json
+import os
 
 from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks, status, Request
 from pydantic import BaseModel, Field
+
+# Import authentication from auth module
+from .auth import get_current_user, CurrentUser, create_access_token, check_rate_limit
+from .audit import audit_logger
+
+
+# ==================== Task Storage Utilities ====================
+
+def get_redis_client(request: Request):
+    """Get Redis client from app state."""
+    return request.app.state.redis
+
+
+def store_task_in_redis(redis_client, task_data: dict) -> None:
+    """Store task in Redis with user_id index."""
+    if redis_client is None:
+        return
+
+    task_id = task_data["task_id"]
+    user_id = task_data["user_id"]
+
+    # Store task data
+    redis_client.set(
+        f"task:{task_id}",
+        json.dumps(task_data),
+        ex=7 * 24 * 60 * 60  # 7 days TTL
+    )
+
+    # Add to user's task index
+    redis_client.sadd(f"user:{user_id}:tasks", task_id)
+
+
+def get_task_from_redis(redis_client, task_id: str) -> Optional[dict]:
+    """Get task from Redis."""
+    if redis_client is None:
+        return None
+
+    data = redis_client.get(f"task:{task_id}")
+    if data:
+        return json.loads(data)
+    return None
+
+
+def get_user_tasks_from_redis(redis_client, user_id: str) -> List[dict]:
+    """Get all tasks for a user from Redis."""
+    if redis_client is None:
+        return []
+
+    task_ids = redis_client.smembers(f"user:{user_id}:tasks")
+    tasks = []
+
+    for task_id in task_ids:
+        task_data = get_task_from_redis(redis_client, task_id)
+        if task_data:
+            tasks.append(task_data)
+
+    # Sort by created_at descending
+    tasks.sort(key=lambda x: x.get("created_at", ""), reverse=True)
+    return tasks
+
+
+def verify_task_ownership(redis_client, task_id: str, user_id: str) -> Optional[dict]:
+    """Verify that a task belongs to the user. Returns task if owned, None otherwise."""
+    task = get_task_from_redis(redis_client, task_id)
+    if task is None:
+        return None
+
+    if task.get("user_id") != user_id:
+        return None
+
+    return task
+
+
+def delete_task_from_redis(redis_client, task_id: str, user_id: str) -> bool:
+    """Delete a task from Redis if owned by user."""
+    task = verify_task_ownership(redis_client, task_id, user_id)
+    if task is None:
+        return False
+
+    redis_client.delete(f"task:{task_id}")
+    redis_client.srem(f"user:{user_id}:tasks", task_id)
+    return True
 
 
 # ==================== Request/Response Models ====================
@@ -125,6 +209,24 @@ class ReportResponse(BaseModel):
     error: Optional[str] = None
 
 
+class TaskListResponse(BaseModel):
+    """Task list response with user isolation."""
+    tasks: List[dict]
+    total: int
+
+
+class TaskDetailResponse(BaseModel):
+    """Task detail response."""
+    task_id: str
+    task_type: str
+    status: str
+    user_id: str
+    created_at: str
+    progress: Optional[float] = None
+    result: Optional[dict] = None
+    error: Optional[str] = None
+
+
 # ==================== Create Routers ====================
 
 data_router = APIRouter()
@@ -137,7 +239,10 @@ analysis_router = APIRouter()
 # ==================== Task Callback Endpoints ====================
 
 @callback_router.post("/task/callback")
-async def task_callback(request: TaskCallbackRequest):
+async def task_callback(
+    request: TaskCallbackRequest,
+    current_user: CurrentUser = Depends(get_current_user)
+):
     """
     Receive callback from Training API when task completes.
 
@@ -146,6 +251,8 @@ async def task_callback(request: TaskCallbackRequest):
     - Export completes
     - HPO completes
     - Any task fails
+
+    Supports both JWT and API key authentication.
     """
     # Store callback data in Redis or database
     # For now, just log and acknowledge
@@ -160,11 +267,18 @@ async def task_callback(request: TaskCallbackRequest):
 # ==================== Data Endpoints ====================
 
 @data_router.post("/search", response_model=DatasetSearchResponse)
-async def search_datasets(request: DatasetSearchRequest):
+async def search_datasets(
+    request: DatasetSearchRequest,
+    http_request: Request,
+    current_user: CurrentUser = Depends(get_current_user),
+    _: None = Depends(check_rate_limit)
+):
     """
     Search for datasets across multiple sources.
 
     Supported sources: Roboflow, Kaggle, HuggingFace
+
+    Requires authentication.
     """
     import time
     start_time = time.time()
@@ -197,6 +311,15 @@ async def search_datasets(request: DatasetSearchRequest):
 
         query_time_ms = int((time.time() - start_time) * 1000)
 
+        # Log data access
+        audit_logger.log_data_access(
+            user_id=current_user.user_id,
+            dataset_id=request.query,
+            action="search",
+            request=http_request,
+            details={"query": request.query, "max_results": request.max_results, "sources": request.sources}
+        )
+
         return DatasetSearchResponse(
             datasets=datasets,
             total=len(datasets),
@@ -204,6 +327,14 @@ async def search_datasets(request: DatasetSearchRequest):
         )
 
     except Exception as e:
+        # Log failed search
+        audit_logger.log_data_access(
+            user_id=current_user.user_id,
+            dataset_id=request.query,
+            action="search_failed",
+            request=http_request,
+            details={"query": request.query, "error": str(e)}
+        )
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Search failed: {str(e)}"
@@ -216,16 +347,20 @@ async def search_datasets(request: DatasetSearchRequest):
 async def submit_training(
     request: TrainRequest,
     background_tasks: BackgroundTasks,
-    request_state = None  # Will be replaced with app state
+    http_request: Request,
+    current_user: CurrentUser = Depends(get_current_user),
+    _: None = Depends(check_rate_limit)
 ):
     """
     Submit a training job to the GPU server.
+
+    Requires authentication.
     """
     task_id = f"train_{uuid.uuid4().hex[:8]}"
 
     try:
         # Use training client from app state (initialized in gateway.py)
-        client = request.app.state.training_client
+        client = http_request.app.state.training_client
 
         # Submit training task
         result = await client.start_training(
@@ -236,8 +371,34 @@ async def submit_training(
             imgsz=request.imgsz
         )
 
+        # Store task in Redis with user_id for isolation
+        task_data = {
+            "task_id": task_id,
+            "task_type": "training",
+            "user_id": current_user.user_id,
+            "status": "submitted",
+            "created_at": datetime.now().isoformat(),
+            "params": {
+                "model": request.model,
+                "data_yaml": request.data_yaml,
+                "epochs": request.epochs,
+                "imgsz": request.imgsz
+            }
+        }
+        redis_client = get_redis_client(http_request)
+        store_task_in_redis(redis_client, task_data)
+
         # Estimate training time
         estimated_time = request.epochs * 2  # rough estimate: 2 min per epoch
+
+        # Log training submission
+        audit_logger.log_training(
+            user_id=current_user.user_id,
+            action="submit",
+            task_id=task_id,
+            request=http_request,
+            details={"model": request.model, "epochs": request.epochs, "imgsz": request.imgsz}
+        )
 
         return TrainResponse(
             task_id=task_id,
@@ -248,6 +409,14 @@ async def submit_training(
         )
 
     except Exception as e:
+        # Log failed training submission
+        audit_logger.log_training(
+            user_id=current_user.user_id,
+            action="submit_failed",
+            task_id=task_id,
+            request=http_request,
+            details={"model": request.model, "epochs": request.epochs, "error": str(e)}
+        )
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
             detail=f"Failed to submit training job: {str(e)}"
@@ -255,15 +424,40 @@ async def submit_training(
 
 
 @train_router.get("/status/{task_id}", response_model=TrainStatusResponse)
-async def get_training_status(task_id: str, request: Request):
+async def get_training_status(
+    task_id: str,
+    request: Request,
+    current_user: CurrentUser = Depends(get_current_user),
+    _: None = Depends(check_rate_limit)
+):
     """
     Get training job status from the GPU server.
+
+    Requires authentication. Verifies task ownership.
     """
     try:
+        # Verify task ownership
+        redis_client = get_redis_client(http_request)
+        task = verify_task_ownership(redis_client, task_id, current_user.user_id)
+        if task is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Task not found or not authorized"
+            )
+
         # Use training client from app state (initialized in gateway.py)
-        client = request.app.state.training_client
+        client = http_request.app.state.training_client
 
         result = await client.get_task_status(task_id)
+
+        # Log status check
+        audit_logger.log_training(
+            user_id=current_user.user_id,
+            action="status_check",
+            task_id=task_id,
+            request=request,
+            details={"status": result.get("status")}
+        )
 
         return TrainStatusResponse(
             task_id=result.get("task_id", task_id),
@@ -283,15 +477,39 @@ async def get_training_status(task_id: str, request: Request):
 
 
 @train_router.post("/cancel/{task_id}")
-async def cancel_training(task_id: str, request: Request):
+async def cancel_training(
+    task_id: str,
+    request: Request,
+    current_user: CurrentUser = Depends(get_current_user),
+    _: None = Depends(check_rate_limit)
+):
     """
     Cancel a running training job.
+
+    Requires authentication. Verifies task ownership.
     """
     try:
+        # Verify task ownership
+        redis_client = get_redis_client(http_request)
+        task = verify_task_ownership(redis_client, task_id, current_user.user_id)
+        if task is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Task not found or not authorized"
+            )
+
         # Use training client from app state (initialized in gateway.py)
-        client = request.app.state.training_client
+        client = http_request.app.state.training_client
 
         result = await client.cancel_task(task_id)
+
+        # Log cancellation
+        audit_logger.log_training(
+            user_id=current_user.user_id,
+            action="cancel",
+            task_id=task_id,
+            request=request
+        )
 
         return {
             "task_id": task_id,
@@ -299,11 +517,63 @@ async def cancel_training(task_id: str, request: Request):
             "message": "Training job cancelled"
         }
 
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
             detail=f"Failed to cancel training job: {str(e)}"
         )
+
+
+@train_router.get("/tasks", response_model=TaskListResponse)
+async def list_tasks(
+    request: Request,
+    current_user: CurrentUser = Depends(get_current_user),
+    _: None = Depends(check_rate_limit)
+):
+    """
+    List all tasks for the current user.
+
+    Requires authentication. Returns only tasks owned by the current user.
+    """
+    redis_client = get_redis_client(http_request)
+    tasks = get_user_tasks_from_redis(redis_client, current_user.user_id)
+
+    return TaskListResponse(
+        tasks=tasks,
+        total=len(tasks)
+    )
+
+
+@train_router.delete("/tasks/{task_id}")
+async def delete_task(
+    task_id: str,
+    request: Request,
+    current_user: CurrentUser = Depends(get_current_user),
+    _: None = Depends(check_rate_limit)
+):
+    """
+    Delete a task.
+
+    Requires authentication. Verifies task ownership.
+    """
+    redis_client = get_redis_client(http_request)
+
+    # Verify ownership and delete
+    success = delete_task_from_redis(redis_client, task_id, current_user.user_id)
+
+    if not success:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Task not found or not authorized"
+        )
+
+    return {
+        "task_id": task_id,
+        "status": "deleted",
+        "message": "Task deleted successfully"
+    }
 
 
 # ==================== Model Registry Endpoints ====================
@@ -314,9 +584,15 @@ async def cancel_training(task_id: str, request: Request):
 # ============================================================
 
 @train_router.get("/models/registry")
-async def list_models():
+async def list_models(
+    request: Request,
+    current_user: CurrentUser = Depends(get_current_user),
+    _: None = Depends(check_rate_limit)
+):
     """
     List all registered models.
+
+    Requires authentication.
     """
     try:
         from src.training.mlflow_tracker import list_registered_models
@@ -346,9 +622,16 @@ class ModelCreateRequest(BaseModel):
 
 
 @train_router.post("/models/registry")
-async def create_model(request: ModelCreateRequest):
+async def create_model(
+    request: ModelCreateRequest,
+    http_request: Request,
+    current_user: CurrentUser = Depends(get_current_user),
+    _: None = Depends(check_rate_limit)
+):
     """
     Create a new registered model.
+
+    Requires authentication.
     """
     try:
         from src.training.mlflow_tracker import create_registered_model as create_model
@@ -367,9 +650,16 @@ async def create_model(request: ModelCreateRequest):
 
 
 @train_router.get("/models/registry/{name}")
-async def get_model(name: str, stage: Optional[str] = None):
+async def get_model(
+    name: str,
+    http_request: Request,
+    current_user: CurrentUser = Depends(get_current_user),
+    _: None = Depends(check_rate_limit)
+):
     """
     Get model versions.
+
+    Requires authentication.
     """
     try:
         from src.training.mlflow_tracker import get_latest_model_versions
@@ -395,9 +685,17 @@ class ModelTransitionRequest(BaseModel):
 
 
 @train_router.post("/models/registry/{name}/transition")
-async def transition_model(name: str, request: ModelTransitionRequest):
+async def transition_model(
+    name: str,
+    request: ModelTransitionRequest,
+    http_request: Request,
+    current_user: CurrentUser = Depends(get_current_user),
+    _: None = Depends(check_rate_limit)
+):
     """
     Transition model to different stage.
+
+    Requires authentication.
     """
     try:
         from src.training.mlflow_tracker import transition_model_stage
@@ -412,9 +710,16 @@ async def transition_model(name: str, request: ModelTransitionRequest):
 
 
 @train_router.delete("/models/registry/{name}")
-async def delete_model(name: str):
+async def delete_model(
+    name: str,
+    http_request: Request,
+    current_user: CurrentUser = Depends(get_current_user),
+    _: None = Depends(check_rate_limit)
+):
     """
     Delete a registered model.
+
+    Requires authentication.
     """
     try:
         from src.training.mlflow_tracker import delete_registered_model
@@ -431,21 +736,54 @@ async def delete_model(name: str):
 # ==================== Export Endpoints ====================
 
 @deploy_router.post("/export", response_model=ExportResponse)
-async def export_model(request: ExportRequest):
+async def export_model(
+    request: ExportRequest,
+    http_request: Request,
+    current_user: CurrentUser = Depends(get_current_user),
+    _: None = Depends(check_rate_limit)
+):
     """
     Submit a model export job to the GPU server.
+
+    Requires authentication.
     """
     task_id = f"export_{uuid.uuid4().hex[:8]}"
 
     try:
         # Use training client from app state (initialized in gateway.py)
-        client = request.app.state.training_client
+        client = http_request.app.state.training_client
 
         result = await client.start_export(
             task_id=task_id,
             model_path=request.model_path,
             platform=request.platform,
             imgsz=request.imgsz
+        )
+
+        # Store task in Redis with user_id for isolation
+        task_data = {
+            "task_id": task_id,
+            "task_type": "export",
+            "user_id": current_user.user_id,
+            "status": "submitted",
+            "created_at": datetime.now().isoformat(),
+            "params": {
+                "model_path": request.model_path,
+                "platform": request.platform,
+                "imgsz": request.imgsz
+            }
+        }
+        redis_client = get_redis_client(http_request)
+        store_task_in_redis(redis_client, task_data)
+
+        # Log export submission
+        audit_logger.log(
+            action="export",
+            user_id=current_user.user_id,
+            resource=f"export/{task_id}",
+            request=http_request,
+            details={"model_path": request.model_path, "platform": request.platform, "imgsz": request.imgsz},
+            status="success"
         )
 
         return ExportResponse(
@@ -455,6 +793,15 @@ async def export_model(request: ExportRequest):
         )
 
     except Exception as e:
+        # Log failed export
+        audit_logger.log(
+            action="export",
+            user_id=current_user.user_id,
+            resource=f"export/{task_id}",
+            request=http_request,
+            details={"model_path": request.model_path, "platform": request.platform, "error": str(e)},
+            status="failure"
+        )
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
             detail=f"Failed to submit export job: {str(e)}"
@@ -462,18 +809,36 @@ async def export_model(request: ExportRequest):
 
 
 @deploy_router.get("/export/status/{task_id}")
-async def get_export_status(task_id: str, request: Request):
+async def get_export_status(
+    task_id: str,
+    http_request: Request,
+    current_user: CurrentUser = Depends(get_current_user),
+    _: None = Depends(check_rate_limit)
+):
     """
     Get export job status.
+
+    Requires authentication. Verifies task ownership.
     """
     try:
+        # Verify task ownership
+        redis_client = get_redis_client(http_request)
+        task = verify_task_ownership(redis_client, task_id, current_user.user_id)
+        if task is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Task not found or not authorized"
+            )
+
         # Use training client from app state (initialized in gateway.py)
-        client = request.app.state.training_client
+        client = http_request.app.state.training_client
 
         result = await client.get_task_status(task_id)
 
         return result
 
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
@@ -484,9 +849,15 @@ async def get_export_status(task_id: str, request: Request):
 # ==================== Data Analysis Endpoints (DeepAnalyze) ====================
 
 @analysis_router.post("/health")
-async def check_analysis_api():
+async def check_analysis_api(
+    request: Request,
+    current_user: CurrentUser = Depends(get_current_user),
+    _: None = Depends(check_rate_limit)
+):
     """
     Check if DeepAnalyze API is available.
+
+    Requires authentication.
     """
     try:
         from .deepanalyze_client import DeepAnalyzeClient
@@ -511,7 +882,12 @@ async def check_analysis_api():
 
 
 @analysis_router.post("/analyze", response_model=DataAnalysisResponse)
-async def analyze_dataset(request: DataAnalysisRequest):
+async def analyze_dataset(
+    request: DataAnalysisRequest,
+    http_request: Request,
+    current_user: CurrentUser = Depends(get_current_user),
+    _: None = Depends(check_rate_limit)
+):
     """
     Analyze dataset using DeepAnalyze.
 
@@ -520,6 +896,8 @@ async def analyze_dataset(request: DataAnalysisRequest):
     - distribution: Data distribution analysis (statistics, correlations)
     - anomalies: Anomaly detection
     - full: Comprehensive analysis
+
+    Requires authentication.
     """
     task_id = f"analyze_{uuid.uuid4().hex[:8]}"
 
@@ -545,6 +923,23 @@ async def analyze_dataset(request: DataAnalysisRequest):
             analysis_type=request.analysis_type
         )
 
+        # Store task in Redis with user_id for isolation
+        task_data = {
+            "task_id": task_id,
+            "task_type": "analysis",
+            "user_id": current_user.user_id,
+            "status": "completed" if "error" not in result else "failed",
+            "created_at": datetime.now().isoformat(),
+            "params": {
+                "dataset_path": request.dataset_path,
+                "analysis_type": request.analysis_type
+            },
+            "result": result if "error" not in result else None,
+            "error": result.get("error") if "error" in result else None
+        }
+        redis_client = get_redis_client(http_request)
+        store_task_in_redis(redis_client, task_data)
+
         if "error" in result:
             return DataAnalysisResponse(
                 task_id=task_id,
@@ -569,13 +964,20 @@ async def analyze_dataset(request: DataAnalysisRequest):
 
 
 @analysis_router.post("/report", response_model=ReportResponse)
-async def generate_report(request: ReportRequest):
+async def generate_report(
+    request: ReportRequest,
+    http_request: Request,
+    current_user: CurrentUser = Depends(get_current_user),
+    _: None = Depends(check_rate_limit)
+):
     """
     Generate a comprehensive data science report using DeepAnalyze.
 
     Args:
         data_description: Description of the data to analyze
         analysis_goals: List of analysis objectives
+
+    Requires authentication.
     """
     task_id = f"report_{uuid.uuid4().hex[:8]}"
 
