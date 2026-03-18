@@ -1,0 +1,112 @@
+# =============================================================================
+# YOLO Auto-Training — .gitignore
+# Industry-standard patterns for Python ML/AI projects
+# =============================================================================
+
+# Environment files — NEVER commit real credentials
+.env
+.env.local
+.env.*.local
+.env.example        # Keep .env.example as a template
+
+# Virtual environments
+.venv/
+venv/
+ENV/
+env/
+.venv
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*.swn
+*.code-workspace
+
+# Python bytecode
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg
+*.egg-info/
+dist/
+build/
+
+# Testing & coverage
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+.mypy_cache/
+.ruff_cache/
+.hypothesis/
+
+# ML model artifacts — never commit trained weights
+*.pt
+*.pth
+*.weights
+*.onnx
+*.tflite
+*.trt
+*.engine
+*.pkl
+*.joblib
+*.h5
+*.pb
+*.tflite
+
+# Training runs & experiment outputs
+runs/
+outputs/
+logs/
+*.log
+wandb/
+tensorboard/
+mlruns/
+
+# Data directories — datasets can be large
+data/
+datasets/
+*.csv
+*.json
+!data/.gitkeep
+!requirements.txt
+
+# Models registry
+models/
+checkpoints/
+artifacts/
+
+# Docker
+.dockerignore
+
+# OS files
+.DS_Store
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+
+# Claude Code
+.claude/
+.gitnexus/
+
+# Documentation site build artifacts
+docs/_build/
+site/
+
+# npm / Node (for web-ui-react)
+web-ui-react/node_modules/
+web-ui-react/.next/
+web-ui-react/out/
+web-ui-react/.turbo/
+
+# Temporary / cache files
+*.tmp
+*.bak
+*.swp
+.cache/
+.npm/
+.yarn/
