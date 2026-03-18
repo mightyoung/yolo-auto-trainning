@@ -1,3 +1,5 @@
+# CLAUDE.md
+
 <!-- gitnexus:start -->
 # GitNexus — Code Intelligence
 
@@ -94,3 +96,136 @@ To check whether embeddings exist, inspect `.gitnexus/meta.json` — the `stats.
 - Generate docs: `npx gitnexus wiki`
 
 <!-- gitnexus:end -->
+
+---
+
+## Build, Test & Development Commands
+
+### Local Development
+
+```bash
+# Install dependencies
+pip install -r requirements.txt
+pip install -r requirements-dev.txt
+
+# Run all tests
+pytest tests/ -v
+
+# Run tests with coverage
+pytest tests/ -v --cov=src --cov=business-api --cov=training-api
+
+# Run a single test file
+pytest tests/unit/test_training_config.py -v
+
+# Run linting
+ruff check src/ business-api/ training-api/
+
+# Type checking
+mypy src/ business-api/ training-api/
+```
+
+### Service Entry Points
+
+```bash
+# Business API (port 8000) - handles data discovery, agent orchestration, task scheduling
+uvicorn business-api.src.api.gateway:app --host 0.0.0.0 --port 8000 --reload
+
+# Training API (port 8001) - runs on GPU server, handles YOLO training, HPO, model export
+uvicorn training-api.src.api.gateway:app --host 0.0.0.0 --port 8001 --reload
+
+# Legacy monolithic API
+uvicorn src.api.gateway:app --host 0.0.0.0 --port 8080 --reload
+
+# Celery worker for async tasks
+celery -A business-api.src.api.tasks worker --loglevel=info
+```
+
+### Docker Compose
+
+```bash
+# All-in-one: Redis + Business API + Celery worker + GPU training
+docker-compose up -d --build
+
+# With full MLOps stack (Prometheus + Grafana + ELK)
+docker-compose -f docker-compose.yml -f docker-compose.monitoring.yml up -d
+```
+
+---
+
+## Architecture Overview
+
+### Three-API Architecture
+
+The system consists of **three independent FastAPI services** that communicate over HTTP:
+
+```
+┌─────────────────────────────────────────────────────┐
+│  Business API (port 8000) — business-api/src/api/   │
+│  Entry: gateway.py                                  │
+│  Handles: Auth, Dataset Discovery, CrewAI Agents,   │
+│           Task Scheduling → Training API            │
+└─────────────────────┬───────────────────────────────┘
+                      │ Internal HTTP
+┌─────────────────────▼───────────────────────────────┐
+│  Training API (port 8001) — training-api/src/api/   │
+│  Entry: gateway.py                                  │
+│  Handles: YOLO Training, Ray Tune HPO, Model Export│
+└─────────────────────────────────────────────────────┘
+
+┌─────────────────────────────────────────────────────┐
+│  Legacy API (port 8080) — src/api/                  │
+│  Entry: gateway.py                                  │
+│  Handles: End-to-end pipeline, Celery tasks        │
+└─────────────────────────────────────────────────────┘
+```
+
+### Business API Routes (`business-api/src/api/`)
+
+| Router | File | Purpose |
+|--------|------|---------|
+| `data_router` | routes.py | Roboflow/Kaggle/HuggingFace dataset search |
+| `train_router` | routes.py | Training job submission via TrainingAPIClient |
+| `deploy_router` | routes.py | Model export orchestration |
+| `agent_router` | agent_routes.py | CrewAI multi-agent workflow triggers |
+| `callback_router` | routes.py | MLflow/webhook callbacks |
+| `analysis_router` | routes.py | Deepanalyze endpoints |
+
+### Training API Routes (`training-api/src/api/`)
+
+| Router | File | Purpose |
+|--------|------|---------|
+| `internal_router` | routes.py | Internal training endpoints (YOLO runner, HPO) |
+| `model_router` | model_routes.py | Model management (list, delete, download) |
+
+### Key Classes
+
+- **`YOLOTrainer`** (`training-api/src/training/runner.py`) — wraps ultralytics YOLO with MLflow tracking, supports HPO via Ray Tune
+- **`PipelineExecutor`** (`src/pipeline/orchestrator.py`) — task dependency graph executor for end-to-end pipelines
+- **`DatasetDiscovery`** (`src/data/discovery.py`) — multi-source dataset search with relevance scoring
+- **CrewAI Agents** (`business-api/src/agents/orchestration.py`) — Dataset Curator, Data Engineer, ML Engineer, DevOps Engineer agents
+
+### Service Communication
+
+- Business API → Training API: `TrainingAPIClient` (`business-api/src/api/training_client.py`) makes HTTP calls with `TRAINING_API_KEY`
+- Both APIs use Redis for caching and Celery for async task queuing
+- MLflow tracks experiments; Prometheus exports metrics at `/metrics`
+
+### Environment Variables
+
+| Variable | Purpose | Default |
+|----------|---------|---------|
+| `REDIS_URL` | Redis connection | `redis://localhost:6379/0` |
+| `TRAINING_API_URL` | Training API address | `http://localhost:8001` |
+| `TRAINING_API_KEY` | Internal API key | `default-key` |
+| `JWT_SECRET_KEY` | JWT signing key | auto-generated |
+| `DEEPSEEK_API_KEY` | LLM for CrewAI agents | required |
+| `MLFLOW_TRACKING_URI` | MLflow server | `http://localhost:5000` |
+
+---
+
+## Testing Patterns
+
+- **Unit tests**: `tests/unit/` — isolated module testing with mocks
+- **Integration tests**: `tests/integration/` — API route testing with test client
+- **conftest.py** at both `tests/` and `business-api/tests/` provides fixtures
+- Key fixtures: `test_client` (FastAPI TestClient), `mock_redis`, `mock_training_api`

@@ -38,7 +38,9 @@ API_KEY_HEADER = APIKeyHeader(name="X-API-Key", auto_error=False)
 BEARER_TOKEN = HTTPBearer(auto_error=False)
 
 # JWT settings
-JWT_SECRET_KEY = os.getenv("JWT_SECRET_KEY", secrets.token_urlsafe(32))
+JWT_SECRET_KEY = os.getenv("JWT_SECRET_KEY")
+if not JWT_SECRET_KEY:
+    raise ValueError("JWT_SECRET_KEY environment variable must be set")
 JWT_ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 30  # 30 minutes
 REFRESH_TOKEN_EXPIRE_DAYS = 7  # 7 days
@@ -46,13 +48,26 @@ REFRESH_TOKEN_EXPIRE_DAYS = 7  # 7 days
 # Redis settings
 REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379/0")
 
+# Redis connection pool (singleton)
+_redis_pool: redis.ConnectionPool = None
 
-# Redis client
+
 def get_redis_client():
-    """Get Redis client."""
+    """Get Redis client from connection pool."""
+    global _redis_pool
     if not REDIS_AVAILABLE:
         return None
-    return redis.from_url(REDIS_URL, decode_responses=True)
+
+    try:
+        if _redis_pool is None:
+            _redis_pool = redis.ConnectionPool.from_url(
+                REDIS_URL,
+                decode_responses=True,
+                max_connections=20
+            )
+        return redis.Redis(connection_pool=_redis_pool)
+    except Exception:
+        return None
 
 
 # JWT token management
@@ -139,6 +154,10 @@ async def lifespan(app: FastAPI):
     print("Starting YOLO Auto Training API...")
     yield
     print("Shutting down YOLO Auto Training API...")
+    global _redis_pool
+    if _redis_pool:
+        _redis_pool.disconnect()
+        _redis_pool = None
 
 
 def create_app() -> FastAPI:

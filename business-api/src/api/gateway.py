@@ -12,6 +12,7 @@ from contextlib import asynccontextmanager
 from typing import Optional
 import os
 import uuid
+import asyncio
 from datetime import datetime, timedelta, timezone
 import secrets
 
@@ -33,22 +34,40 @@ API_KEY_HEADER = APIKeyHeader(name="X-API-Key", auto_error=False)
 BEARER_TOKEN = HTTPBearer(auto_error=False)
 
 # JWT settings
-JWT_SECRET_KEY = os.getenv("JWT_SECRET_KEY", secrets.token_urlsafe(32))
+JWT_SECRET_KEY = os.getenv("JWT_SECRET_KEY")
+if not JWT_SECRET_KEY:
+    raise ValueError("JWT_SECRET_KEY environment variable must be set")
 JWT_ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 30
 
 # Redis settings
 REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379/0")
 
-# Training API settings
-TRAINING_API_URL = os.getenv("TRAINING_API_URL", "http://localhost:8001")
-TRAINING_API_KEY = os.getenv("TRAINING_API_KEY", "default-key")
+# Training API settings - must be set in environment
+TRAINING_API_URL = os.getenv("TRAINING_API_URL")
+if not TRAINING_API_URL:
+    raise ValueError("TRAINING_API_URL environment variable must be set")
+
+TRAINING_API_KEY = os.getenv("TRAINING_API_KEY")
+if not TRAINING_API_KEY:
+    raise ValueError("TRAINING_API_KEY environment variable must be set")
+
+
+# Redis connection pool (singleton)
+_redis_pool: redis.ConnectionPool = None
 
 
 def get_redis_client():
-    """Get Redis client."""
+    """Get Redis client from connection pool."""
+    global _redis_pool
     try:
-        return redis.from_url(REDIS_URL, decode_responses=True)
+        if _redis_pool is None:
+            _redis_pool = redis.ConnectionPool.from_url(
+                REDIS_URL,
+                decode_responses=True,
+                max_connections=20
+            )
+        return redis.Redis(connection_pool=_redis_pool)
     except Exception:
         return None
 
@@ -71,6 +90,10 @@ async def lifespan(app: FastAPI):
     # Shutdown
     if app.state.redis:
         app.state.redis.close()
+    global _redis_pool
+    if _redis_pool:
+        _redis_pool.disconnect()
+        _redis_pool = None
 
 
 # Create FastAPI app
@@ -157,7 +180,9 @@ async def health_check(request: Request):
     redis_status = "connected"
     try:
         if request.app.state.redis:
-            request.app.state.redis.ping()
+            # Run sync redis.ping() in executor to avoid blocking event loop
+            loop = asyncio.get_event_loop()
+            await loop.run_in_executor(None, request.app.state.redis.ping)
     except Exception:
         redis_status = "disconnected"
 

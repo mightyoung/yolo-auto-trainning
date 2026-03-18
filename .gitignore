@@ -93,6 +93,9 @@ Desktop.ini
 .claude/
 .gitnexus/
 
+# Agent swarm memory (local agent state - never commit)
+.swarm/
+
 # Documentation site build artifacts
 docs/_build/
 site/

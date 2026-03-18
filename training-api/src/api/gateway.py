@@ -29,14 +29,18 @@ except ImportError:
 API_KEY_HEADER = "X-API-Key"
 
 # JWT settings
-JWT_SECRET_KEY = os.getenv("JWT_SECRET_KEY", secrets.token_urlsafe(32))
+JWT_SECRET_KEY = os.getenv("JWT_SECRET_KEY")
+if not JWT_SECRET_KEY:
+    raise ValueError("JWT_SECRET_KEY environment variable must be set")
 JWT_ALGORITHM = "HS256"
 
 # Redis settings
 REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379/0")
 
-# Internal API Key
-INTERNAL_API_KEY = os.getenv("INTERNAL_API_KEY", "default-internal-key")
+# Internal API Key - must be set in environment
+INTERNAL_API_KEY = os.getenv("INTERNAL_API_KEY")
+if not INTERNAL_API_KEY:
+    raise ValueError("INTERNAL_API_KEY environment variable must be set")
 
 
 def get_redis_client():
@@ -76,10 +80,12 @@ app = FastAPI(
     lifespan=lifespan
 )
 
-# CORS middleware
+# CORS settings - use explicit origins for security
+# NEVER use allow_origins=["*"] with allow_credentials=True (browsers reject this)
+ALLOWED_ORIGINS = os.getenv("ALLOWED_ORIGINS", "http://localhost:3000").split(",")
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=ALLOWED_ORIGINS,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

@@ -36,7 +36,9 @@ class DeepAnalyzeClient:
             "DEEPANALYZE_API_URL",
             "http://localhost:8200/v1"
         )
-        self.api_key = api_key or os.getenv("DEEPANALYZE_API_KEY", "dummy")
+        self.api_key = api_key or os.getenv("DEEPANALYZE_API_KEY")
+        if not self.api_key:
+            raise ValueError("DEEPANALYZE_API_KEY must be provided")
         self.model = model
         self._session = requests.Session()
         self._session.headers.update({"Authorization": f"Bearer {self.api_key}"})

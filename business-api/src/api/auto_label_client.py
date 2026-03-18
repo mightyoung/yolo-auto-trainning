@@ -29,7 +29,9 @@ class AutoLabelClient:
             "TRAINING_API_URL",
             "http://localhost:8001"
         )
-        self.api_key = api_key or os.getenv("TRAINING_API_KEY", "default-key")
+        self.api_key = api_key or os.getenv("TRAINING_API_KEY")
+        if not self.api_key:
+            raise ValueError("TRAINING_API_KEY must be provided")
 
     def health_check(self) -> bool:
         """Check if Auto Label service is available."""

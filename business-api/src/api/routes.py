@@ -12,8 +12,9 @@ from pathlib import Path
 from typing import Optional, List
 from datetime import datetime
 import uuid
+import asyncio
 
-from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks, status
+from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks, status, Request
 from pydantic import BaseModel, Field
 
 
@@ -172,9 +173,10 @@ async def search_datasets(request: DatasetSearchRequest):
     try:
         from src.data.discovery import DatasetDiscovery
         discovery = DatasetDiscovery()
-        results = discovery.search(
-            query=request.query,
-            max_results=request.max_results
+        # Run sync discovery.search in executor to avoid blocking event loop
+        loop = asyncio.get_event_loop()
+        results = await loop.run_in_executor(
+            None, discovery.search, request.query, request.max_results
         )
 
         # Filter by sources if specified
@@ -222,14 +224,8 @@ async def submit_training(
     task_id = f"train_{uuid.uuid4().hex[:8]}"
 
     try:
-        # Create training client (will be injected via dependency)
-        from .training_client import TrainingAPIClient
-        import os
-
-        client = TrainingAPIClient(
-            base_url=os.getenv("TRAINING_API_URL", "http://localhost:8001"),
-            api_key=os.getenv("TRAINING_API_KEY", "default-key")
-        )
+        # Use training client from app state (initialized in gateway.py)
+        client = request.app.state.training_client
 
         # Submit training task
         result = await client.start_training(
@@ -259,18 +255,13 @@ async def submit_training(
 
 
 @train_router.get("/status/{task_id}", response_model=TrainStatusResponse)
-async def get_training_status(task_id: str):
+async def get_training_status(task_id: str, request: Request):
     """
     Get training job status from the GPU server.
     """
     try:
-        from .training_client import TrainingAPIClient
-        import os
-
-        client = TrainingAPIClient(
-            base_url=os.getenv("TRAINING_API_URL", "http://localhost:8001"),
-            api_key=os.getenv("TRAINING_API_KEY", "default-key")
-        )
+        # Use training client from app state (initialized in gateway.py)
+        client = request.app.state.training_client
 
         result = await client.get_task_status(task_id)
 
@@ -292,18 +283,13 @@ async def get_training_status(task_id: str):
 
 
 @train_router.post("/cancel/{task_id}")
-async def cancel_training(task_id: str):
+async def cancel_training(task_id: str, request: Request):
     """
     Cancel a running training job.
     """
     try:
-        from .training_client import TrainingAPIClient
-        import os
-
-        client = TrainingAPIClient(
-            base_url=os.getenv("TRAINING_API_URL", "http://localhost:8001"),
-            api_key=os.getenv("TRAINING_API_KEY", "default-key")
-        )
+        # Use training client from app state (initialized in gateway.py)
+        client = request.app.state.training_client
 
         result = await client.cancel_task(task_id)
 
@@ -452,13 +438,8 @@ async def export_model(request: ExportRequest):
     task_id = f"export_{uuid.uuid4().hex[:8]}"
 
     try:
-        from .training_client import TrainingAPIClient
-        import os
-
-        client = TrainingAPIClient(
-            base_url=os.getenv("TRAINING_API_URL", "http://localhost:8001"),
-            api_key=os.getenv("TRAINING_API_KEY", "default-key")
-        )
+        # Use training client from app state (initialized in gateway.py)
+        client = request.app.state.training_client
 
         result = await client.start_export(
             task_id=task_id,
@@ -481,18 +462,13 @@ async def export_model(request: ExportRequest):
 
 
 @deploy_router.get("/export/status/{task_id}")
-async def get_export_status(task_id: str):
+async def get_export_status(task_id: str, request: Request):
     """
     Get export job status.
     """
     try:
-        from .training_client import TrainingAPIClient
-        import os
-
-        client = TrainingAPIClient(
-            base_url=os.getenv("TRAINING_API_URL", "http://localhost:8001"),
-            api_key=os.getenv("TRAINING_API_KEY", "default-key")
-        )
+        # Use training client from app state (initialized in gateway.py)
+        client = request.app.state.training_client
 
         result = await client.get_task_status(task_id)
 
@@ -518,7 +494,7 @@ async def check_analysis_api():
 
         client = DeepAnalyzeClient(
             base_url=os.getenv("DEEPANALYZE_API_URL", "http://localhost:8200/v1"),
-            api_key=os.getenv("DEEPANALYZE_API_KEY", "dummy")
+            api_key=os.getenv("DEEPANALYZE_API_KEY")
         )
 
         available = client.health_check()
@@ -553,7 +529,7 @@ async def analyze_dataset(request: DataAnalysisRequest):
 
         client = DeepAnalyzeClient(
             base_url=os.getenv("DEEPANALYZE_API_URL", "http://localhost:8200/v1"),
-            api_key=os.getenv("DEEPANALYZE_API_KEY", "dummy")
+            api_key=os.getenv("DEEPANALYZE_API_KEY")
         )
 
         # Check if API is available
@@ -609,7 +585,7 @@ async def generate_report(request: ReportRequest):
 
         client = DeepAnalyzeClient(
             base_url=os.getenv("DEEPANALYZE_API_URL", "http://localhost:8200/v1"),
-            api_key=os.getenv("DEEPANALYZE_API_KEY", "dummy")
+            api_key=os.getenv("DEEPANALYZE_API_KEY")
         )
 
         # Check if API is available
