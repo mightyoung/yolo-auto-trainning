@@ -1,0 +1,18 @@
+# Development Dependencies for YOLO Auto-Training
+
+# Testing
+pytest>=7.0.0
+pytest-cov>=4.0.0
+pytest-asyncio>=0.21.0
+pytest-mock>=3.10.0
+
+# Linting
+ruff>=0.1.0
+flake8>=6.0.0
+
+# Type Checking
+mypy>=1.0.0
+
+# Code Quality
+black>=23.0.0
+isort>=5.12.0

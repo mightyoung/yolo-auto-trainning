@@ -1,0 +1,40 @@
+# Prometheus configuration for YOLO Auto-Training
+# Global config
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+  external_labels:
+    cluster: 'yolo-auto-training'
+    environment: 'production'
+
+# Alert manager configuration
+alerting:
+  alertmanagers:
+    - static_configs:
+        - targets:
+            - alertmanager:9093
+
+# Rule files
+rule_files:
+  - "alerts.yml"
+
+# Scrape configurations
+scrape_configs:
+  # Prometheus self-monitoring
+  - job_name: 'prometheus'
+    static_configs:
+      - targets: ['localhost:9090']
+
+  # Business API metrics
+  - job_name: 'yolo-business-api'
+    static_configs:
+      - targets: ['business-api:8000']
+    metrics_path: '/metrics'
+    scrape_interval: 10s
+
+  # Training API metrics
+  - job_name: 'yolo-training-api'
+    static_configs:
+      - targets: ['training-api:8002']
+    metrics_path: '/metrics'
+    scrape_interval: 10s

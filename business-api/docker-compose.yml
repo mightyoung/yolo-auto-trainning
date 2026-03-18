@@ -1,0 +1,50 @@
+# Business API Docker Compose
+# Location: business-api/docker-compose.yml
+
+version: '3.8'
+
+services:
+  # Redis for state management
+  redis:
+    image: redis:7-alpine
+    container_name: yolo-business-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+
+  # Business API
+  business-api:
+    build: .
+    container_name: yolo-business-api
+    ports:
+      - "8000:8000"
+    env_file:
+      - .env
+    environment:
+      - REDIS_URL=redis://redis:6379/0
+      - TRAINING_API_URL=http://192.168.11.2:8001
+      - TRAINING_API_KEY=${TRAINING_API_KEY:-default-key}
+    volumes:
+      - ./data:/data
+      - ./runs:/runs
+    depends_on:
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+networks:
+  default:
+    name: yolo-business-network
+
+volumes:
+  redis_data:

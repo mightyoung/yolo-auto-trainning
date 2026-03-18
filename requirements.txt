@@ -1,0 +1,42 @@
+# YOLO Auto-Training System Dependencies
+# Core
+ultralytics>=8.0.0
+ray[tune]>=2.0.0
+
+# API
+fastapi>=0.100.0
+uvicorn[standard]>=0.23.0
+
+# Task Queue
+celery>=5.3.0
+redis>=5.0.0
+
+# Agent Framework
+crewai>=0.50.0
+
+# Data Discovery
+requests>=2.31.0
+kaggle>=1.6.0
+datasets>=2.18.0
+huggingface_hub>=0.21.0
+
+# Authentication
+PyJWT>=2.8.0
+python-jose[cryptography]>=3.3.0
+
+# Configuration
+pydantic>=2.0.0
+pydantic-settings>=2.0.0
+python-multipart>=0.0.6
+
+# Utilities
+httpx>=0.24.0
+
+# MLOps - Experiment Tracking
+mlflow>=2.0.0
+
+# MLOps - Monitoring
+prometheus-client>=0.19.0
+
+# MLOps - Structured Logging
+python-json-logger>=2.0.0

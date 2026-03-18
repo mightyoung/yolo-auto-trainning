@@ -1,0 +1,56 @@
+# Docker Compose for Logging Stack (Fluent Bit + Elasticsearch + Kibana)
+# Usage: docker-compose -f docker-compose.logging.yml up -d
+
+version: '3.8'
+
+services:
+  # Fluent Bit log collector
+  fluent-bit:
+    image: fluent/fluent-bit:3.0.0
+    container_name: fluent-bit
+    volumes:
+      - ./fluent-bit.conf:/fluent-bit/etc/fluent-bit.conf
+      - /var/lib/docker/containers:/var/lib/docker/containers:ro
+    ports:
+      - "2020:2020"  # HTTP endpoint for Fluent Bit metrics
+    environment:
+      - FLUENT_BIT_HOST=fluent-bit
+      - FLUENT_BIT_PORT=2020
+    networks:
+      - logging
+
+  # Elasticsearch for log storage
+  elasticsearch:
+    image: docker.elastic.co/elasticsearch/elasticsearch:8.12.0
+    container_name: elasticsearch
+    environment:
+      - discovery.type=single-node
+      - xpack.security.enabled=false
+      - "ES_JAVA_OPTS=-Xms512m -Xmx512m"
+    volumes:
+      - elasticsearch_data:/usr/share/elasticsearch/data
+    ports:
+      - "9200:9200"
+      - "9300:9300"
+    networks:
+      - logging
+
+  # Kibana for log visualization
+  kibana:
+    image: docker.elastic.co/kibana/kibana:8.12.0
+    container_name: kibana
+    environment:
+      - ELASTICSEARCH_HOSTS=http://elasticsearch:9200
+    ports:
+      - "5601:5601"
+    depends_on:
+      - elasticsearch
+    networks:
+      - logging
+
+volumes:
+  elasticsearch_data:
+
+networks:
+  logging:
+    driver: bridge

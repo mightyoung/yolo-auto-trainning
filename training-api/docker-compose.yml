@@ -1,0 +1,49 @@
+# Training API Docker Compose (GPU-enabled)
+# Location: training-api/docker-compose.yml
+
+version: '3.8'
+
+services:
+  # Redis for state management
+  redis:
+    image: redis:7-alpine
+    container_name: yolo-training-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+
+  # Training API
+  training-api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: yolo-training-api
+    runtime: nvidia
+    ports:
+      - "8001:8000"
+    env_file:
+      - .env
+    environment:
+      - REDIS_URL=redis://redis:6379/0
+      - CUDA_VISIBLE_DEVICES=0
+      - NVIDIA_VISIBLE_DEVICES=all
+    volumes:
+      - ./runs:/runs
+      - ./models:/models
+    depends_on:
+      - redis
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+
+networks:
+  default:
+    name: yolo-training-network
+
+volumes:
+  redis_data:

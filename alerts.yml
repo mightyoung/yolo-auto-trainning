@@ -1,0 +1,70 @@
+# Alert rules for YOLO Auto-Training
+# Groups define alert conditions and notification settings
+
+groups:
+  - name: yolo_training_alerts
+    interval: 30s
+    rules:
+      # High error rate alert
+      - alert: HighErrorRate
+        expr: |
+          sum(rate(http_requests_total{status=~"5.."}[5m]))
+          /
+          sum(rate(http_requests_total[5m])) > 0.05
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "High error rate detected"
+          description: "Error rate is above 5% for the past 5 minutes"
+
+      # API down alert
+      - alert: APIDown
+        expr: up{job=~"yolo-.*-api"} == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "API is down"
+          description: "{{ $labels.job }} has been down for more than 1 minute"
+
+      # Redis disconnected alert
+      - alert: RedisDisconnected
+        expr: redis_connected == 0
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Redis disconnected"
+          description: "Redis has been disconnected for more than 2 minutes"
+
+      # Training job failed
+      - alert: TrainingJobFailed
+        expr: increase(training_jobs_total{status="failed"}[1h]) > 3
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Training jobs failing"
+          description: "More than 3 training jobs failed in the past hour"
+
+      # GPU memory high
+      - alert: GPUMemoryHigh
+        expr: gpu_memory_used_mb / 8192 > 0.9
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "GPU memory usage high"
+          description: "GPU {{ $labels.device }} memory usage is above 90%"
+
+      # High latency
+      - alert: HighLatency
+        expr: |
+          histogram_quantile(0.95, rate(http_request_duration_seconds_bucket[5m])) > 5
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High API latency"
+          description: "P95 latency is above 5 seconds for {{ $labels.endpoint }}"
