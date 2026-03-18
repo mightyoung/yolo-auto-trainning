@@ -9,14 +9,14 @@ from unittest.mock import Mock, patch
 
 # Add src to path - for training-api
 # training-api/ is the package root, parent is project root
-training_api_root = Path(__file__).parent.parent  # training-api/
-project_root = training_api_root.parent  # yolo-auto-trainning/
-src_path = training_api_root / "src"  # training-api/src
+training_api_root = Path(__file__).parent.parent.resolve()  # training-api/
+training_api_src = training_api_root / "src"  # training-api/src
 
-if str(project_root) not in sys.path:
-    sys.path.insert(0, str(project_root))
+# Add training_api_root to sys.path FIRST to prioritize it over project root
 if str(training_api_root) not in sys.path:
     sys.path.insert(0, str(training_api_root))
+if str(training_api_src) not in sys.path:
+    sys.path.insert(1, str(training_api_src))
 
 # Set environment variables before importing
 os.environ["INTERNAL_API_KEY"] = "test-internal-key"

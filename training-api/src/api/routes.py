@@ -25,13 +25,8 @@ from fastapi import APIRouter, HTTPException, Header, status, BackgroundTasks, D
 from pydantic import BaseModel, Field
 
 # Import verify_internal_api_key from gateway for timing-safe comparison
-import sys
-from pathlib import Path
-_project_root = Path(__file__).parent.parent.parent.parent
-if str(_project_root) not in sys.path:
-    sys.path.insert(0, str(_project_root))
-
-from training_api.src.api.gateway import verify_internal_api_key, check_rate_limit
+# Use relative import since gateway is in the same package
+from .gateway import verify_internal_api_key, check_rate_limit
 
 
 # ==================== Request/Response Models ====================
@@ -580,8 +575,8 @@ async def create_registered_model(
 @router.get("/models/registry/{name}")
 async def get_model_info(
     name: str,
-    stage: Optional[str] = None,
     http_request: Request,
+    stage: Optional[str] = None,
     x_api_key: str = Header(..., alias="X-API-Key"),
     _: None = Depends(check_rate_limit)
 ):
@@ -785,12 +780,12 @@ async def predict(
 @router.post("/inference/predict/image")
 async def predict_image(
     model_path: str,
+    http_request: Request,
     confidence: float = 0.25,
     iou_threshold: float = 0.45,
     max_det: int = 300,
     device: str = "cuda:0",
     half: bool = False,
-    http_request: Request,
     x_api_key: str = Header(..., alias="X-API-Key"),
     _: None = Depends(check_rate_limit)
 ):

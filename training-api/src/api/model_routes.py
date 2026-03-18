@@ -14,11 +14,8 @@ from fastapi import APIRouter, HTTPException, Header, status, Request, Depends
 from pydantic import BaseModel, Field
 
 # Import verify_internal_api_key from gateway for timing-safe comparison
-_project_root = Path(__file__).parent.parent.parent.parent
-if str(_project_root) not in sys.path:
-    sys.path.insert(0, str(_project_root))
-
-from training_api.src.api.gateway import verify_internal_api_key, check_rate_limit
+# Use relative import since gateway is in the same package
+from .gateway import verify_internal_api_key, check_rate_limit
 
 
 # ==================== Request/Response Models ====================
@@ -47,8 +44,8 @@ model_router = APIRouter()
 
 @model_router.get("/models", response_model=ModelListResponse)
 async def list_models(
-    limit: int = 100,
     http_request: Request,
+    limit: int = 100,
     x_api_key: str = Header(..., alias="X-API-Key"),
     _: None = Depends(check_rate_limit)
 ):
@@ -138,8 +135,8 @@ async def delete_model(
 @model_router.post("/models/{task_id}/export")
 async def export_model(
     task_id: str,
-    format: str = "onnx",
     http_request: Request,
+    format: str = "onnx",
     x_api_key: str = Header(..., alias="X-API-Key"),
     _: None = Depends(check_rate_limit)
 ):
