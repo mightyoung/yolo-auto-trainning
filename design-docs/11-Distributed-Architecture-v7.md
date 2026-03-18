@@ -50,7 +50,7 @@
                                           │
                                           ▼
 ┌─────────────────────────────────────────────────────────────────────────────────┐
-│                           GPU服务器 (192.168.11.2)                          │
+│                           GPU服务器 (<YOUR_GPU_SERVER_IP>)                          │
 │  ┌─────────────────────────────────────────────────────────────────────────┐ │
 │  │                       训练API (Training API)                           │ │
 │  │  ┌────────────────┐  ┌────────────────┐  ┌────────────────────────┐   │ │
@@ -167,7 +167,7 @@ Response:
     "task_id": "train_abc123",
     "status": "submitted",
     "submitted_at": "2026-03-14T10:00:00Z",
-    "gpu_server": "192.168.11.2:8001",
+    "gpu_server": "<YOUR_GPU_SERVER_IP>:8001",
     "estimated_time_minutes": 45
 }
 ```
@@ -291,7 +291,7 @@ services:
       - "8000:8000"
     environment:
       - REDIS_URL=redis://redis:6379/0
-      - TRAINING_API_URL=http://192.168.11.2:8001
+      - TRAINING_API_URL=http://<YOUR_GPU_SERVER_IP>:8001
       - JWT_SECRET_KEY=${JWT_SECRET_KEY}
       - DEEPSEEK_API_KEY=${DEEPSEEK_API_KEY}
       - ROBOFLOW_API_KEY=${ROBOFLOW_API_KEY}
@@ -396,7 +396,7 @@ networks:
 │                              │                                                   │
 │                              ▼                                                   │
 │  3. 转发到GPU服务器                                                            │
-│     POST http://192.168.11.2:8001/api/v1/internal/train/start                  │
+│     POST http://<YOUR_GPU_SERVER_IP>:8001/api/v1/internal/train/start                  │
 │                              │                                                   │
 │                              ▼                                                   │
 │  4. 返回task_id给用户                                                         │
@@ -533,7 +533,7 @@ BUSINESS_API_PORT=8000
 REDIS_URL=redis://localhost:6379/0
 
 # 训练API配置
-TRAINING_API_URL=http://192.168.11.2:8001
+TRAINING_API_URL=http://<YOUR_GPU_SERVER_IP>:8001
 TRAINING_API_KEY=your-training-api-key
 
 # 数据源API

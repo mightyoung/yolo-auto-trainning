@@ -10,10 +10,10 @@ docker save -o yolo-training-api.tar yolo-training-api:latest
 
 # 3. Transfer to GPU server (replace with your server details)
 # Using scp (Linux/Mac):
-scp yolo-training-api.tar user@192.168.11.2:/path/to/destination/
+scp yolo-training-api.tar user@<YOUR_GPU_SERVER_IP>:/path/to/destination/
 
 # Or using pscp (Windows PuTTY):
-# pscp yolo-training-api.tar user@192.168.11.2:/path/to/destination/
+# pscp yolo-training-api.tar user@<YOUR_GPU_SERVER_IP>:/path/to/destination/
 
 # 4. On GPU server, load the image:
 docker load -i yolo-training-api.tar

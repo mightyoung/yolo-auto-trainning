@@ -554,7 +554,7 @@ class AutoTrainingOrchestrator:
 {
     "task_description": "Detect cars and pedestrians on road",
     "dataset_path": "./data/road.yaml",
-    "device_ip": "192.168.1.100"
+    "device_ip": "<YOUR_EDGE_DEVICE_IP>"
 }
 
 # 仅数据请求
@@ -586,7 +586,7 @@ class AutoTrainingOrchestrator:
         },
         "deployment": {
             "status": "completed",
-            "endpoint": "http://192.168.1.100:8000/predict",
+            "endpoint": "http://<YOUR_EDGE_DEVICE_IP>:8000/predict",
             "test_results": {"detections": [...], "fps": 45}
         }
     }

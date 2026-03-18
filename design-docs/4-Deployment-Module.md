@@ -199,7 +199,7 @@ class EdgeDeployer:
         Args:
             config: {
                 "device_type": "jetson_nano" | "jetson_orin_nano",
-                "ip": "192.168.1.100",
+                "ip": "<YOUR_EDGE_DEVICE_IP>",
                 "user": "nvidia",
                 "ssh_key_path": os.getenv("SSH_KEY_PATH"),  # 从环境变量获取
                 "port": 8000
@@ -471,7 +471,7 @@ jobs:
     "model_path": "./runs/detect/train/weights/best.pt",
     "device_config": {
         "device_type": "jetson_nano",
-        "ip": "192.168.1.100",
+        "ip": "<YOUR_EDGE_DEVICE_IP>",
         "user": "nvidia",
         "ssh_key_path": os.getenv("JETSON_SSH_KEY")  # 从环境变量获取
     },
@@ -486,8 +486,8 @@ jobs:
 {
     "status": "deployed",
     "model_path": "/home/nvidia/models/model.onnx",
-    "endpoint": "http://192.168.1.100:8000/predict",
-    "health_endpoint": "http://192.168.1.100:8000/health",
+    "endpoint": "http://<YOUR_EDGE_DEVICE_IP>:8000/predict",
+    "health_endpoint": "http://<YOUR_EDGE_DEVICE_IP>:8000/health",
     "model_info": {
         "input_shape": [1, 3, 640, 640],
         "precision": "fp16"

@@ -28,7 +28,7 @@ services:
       - .env
     environment:
       - REDIS_URL=redis://redis:6379/0
-      - TRAINING_API_URL=http://192.168.11.2:8001
+      - TRAINING_API_URL=http://localhost:8001
       - TRAINING_API_KEY=${TRAINING_API_KEY:-default-key}
     volumes:
       - ./data:/data

@@ -538,9 +538,9 @@ class EdgeDeployer:
             {
                 "status": "deployed",
                 "device": "jetson-nano",
-                "device_ip": "192.168.1.100",
+                "device_ip": "<YOUR_EDGE_DEVICE_IP>",
                 "model_path": "/opt/yolo/model.onnx",
-                "inference_endpoint": "http://192.168.1.100:8080/infer",
+                "inference_endpoint": "http://<YOUR_EDGE_DEVICE_IP>:8080/infer",
                 "deployment_time_sec": 45
             }
         """
@@ -943,7 +943,7 @@ class HealthMonitor:
     "model_path": "./runs/export/yolo11n.onnx",
     "device": {
         "type": "jetson-nano",
-        "ip": "192.168.1.100",
+        "ip": "<YOUR_EDGE_DEVICE_IP>",
         "username": "nvidia"
         // password 和 ssh_key 通过环境变量传递，不在请求中
     },
@@ -969,7 +969,7 @@ class HealthMonitor:
     "status": "deployed",
     "device": "jetson-nano",
     "model_path": "/opt/yolo/model.onnx",
-    "inference_endpoint": "http://192.168.1.100:8080/infer",
+    "inference_endpoint": "http://<YOUR_EDGE_DEVICE_IP>:8080/infer",
     "performance": {
         "fps": 45.2,
         "latency_ms": 22.1,

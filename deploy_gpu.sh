@@ -4,8 +4,8 @@
 
 set -e
 
-SERVER_USER="user"
-SERVER_IP="192.168.11.2"
+SERVER_USER="<YOUR_SERVER_USER>"
+SERVER_IP="<YOUR_GPU_SERVER_IP>"
 PROJECT_DIR="yolo-auto-training"
 
 echo "=== YOLO Auto-Training GPU 部署脚本 ==="

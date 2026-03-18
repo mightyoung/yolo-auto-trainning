@@ -57,7 +57,7 @@
                                  ▼
                         ┌──────────────────┐
                         │  Training API    │
-                        │(192.168.11.2:8001)│
+                        │(<YOUR_GPU_SERVER_IP>:8001)│
                         │  - Auto Label   │
                         │  - Training     │
                         │  - Export       │
@@ -75,7 +75,7 @@
 ## Next Steps
 
 1. Build Docker image on machine with Docker installed
-2. Transfer image to GPU server (192.168.11.2)
+2. Transfer image to GPU server (<YOUR_GPU_SERVER_IP>)
 3. Test auto-labeling on GPU server
 4. Install model weights (GroundingDINO, SAM)
 

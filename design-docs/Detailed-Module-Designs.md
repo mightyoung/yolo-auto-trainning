@@ -760,7 +760,7 @@ QWEN_API_KEY=sk-...
 COMFYUI_HOST=localhost:8188
 
 # Edge Device
-JETSON_IP=192.168.1.100
+JETSON_IP=<YOUR_EDGE_DEVICE_IP>
 JETSON_USER=nvidia
 SSH_KEY_PATH=~/.ssh/jetson_rsa
 

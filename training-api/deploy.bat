@@ -14,7 +14,7 @@ echo.
 echo Build complete!
 echo.
 echo To transfer to GPU server:
-echo   scp yolo-training-api.tar user@192.168.11.2:/path/
+echo   scp yolo-training-api.tar user@<YOUR_GPU_SERVER_IP>:/path/
 echo.
 echo On GPU server, run:
 echo   docker load -i yolo-training-api.tar
