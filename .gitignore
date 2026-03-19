@@ -9,6 +9,9 @@
 .env.*.local
 .env.example        # Keep .env.example as a template
 
+# Colab secrets (local API keys - never commit)
+colab/secrets.env
+
 # Virtual environments
 .venv/
 venv/
