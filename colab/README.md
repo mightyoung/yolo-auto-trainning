@@ -67,78 +67,81 @@ batch = 32
 |------|--------|------|
 | 1 | GPU 检测 | 自动识别 T4/A100 |
 | 2 | 依赖安装 | ultralytics, fastapi, 等 |
-| 3 | 项目克隆 | 从 GitHub 克隆 |
+| 3 | 项目克隆 | 从 GitHub 克隆，创建 __init__.py |
 | 4 | Business API | 数据集发现服务 (port 8000) |
 | 5 | Training API | 训练任务服务 (port 8001) |
-| 6 | 数据集搜索 | 需要 Roboflow/Kaggle/HF API Keys |
-| 7 | 任务提交 | 通过 API 提交训练任务 |
-| 8 | 状态监控 | 轮询训练进度 |
-| 9 | 结果获取 | 获取训练指标 |
+| 6 | 数据集 API Keys | Kaggle 已配置 |
+| 7 | 健康检查 & 数据集发现 | 使用 /api/v1/data/search |
+| 8 | 任务提交 | 使用 /api/v1/internal/train/start |
+| 9 | 状态监控 | 使用 /api/v1/internal/train/status/{id} |
 | 10 | 直接训练 | 使用 Ultralytics 直接训练 |
 | 11 | 模型导出 | 导出为 ONNX |
 
-## API Keys 配置 (可选)
+## API Endpoints (已验证)
 
-### 数据集发现 (需要付费 API Keys)
+### Business API (port 8000)
 
-如果需要测试自动数据集发现功能，需要配置以下 API Keys：
+| 端点 | 方法 | 说明 |
+|------|------|------|
+| `/health` | GET | 健康检查 |
+| `/api/v1/data/search` | POST | 数据集搜索 |
+
+### Training API (port 8001)
+
+| 端点 | 方法 | 说明 |
+|------|------|------|
+| `/health` | GET | 健康检查 |
+| `/api/v1/internal/train/start` | POST | 提交训练任务 |
+| `/api/v1/internal/train/status/{task_id}` | GET | 获取训练状态 |
+| `/api/v1/internal/train/cancel/{task_id}` | POST | 取消训练任务 |
+
+## API Keys 配置
+
+### Kaggle (已配置)
+```python
+os.environ["KAGGLE_USERNAME"] = "amurdaddy"
+os.environ["KAGGLE_KEY"] = "KGAT_xxxxxxxxxxxxxxxx"
+```
+
+### 其他 API Keys (可选)
 
 ```python
 # Roboflow
 os.environ["ROBOFLOW_API_KEY"] = "your-roboflow-api-key"
 
-# Kaggle
-os.environ["KAGGLE_USERNAME"] = "your-kaggle-username"
-os.environ["KAGGLE_KEY"] = "your-kaggle-api-key"
-
 # HuggingFace
 os.environ["HF_TOKEN"] = "your-huggingface-token"
 ```
 
-### 配置位置
-
-在 Step 4 (启动 Business API) 之前添加环境变量配置。
-
-## 快速验证命令
-
-在 Colab cell 中运行:
-
-```bash
-!python -c "
-import torch
-print(f'CUDA: {torch.cuda.is_available()}')
-from ultralytics import YOLO
-model = YOLO('yolo11n.pt')
-results = model.train(data='coco128.yaml', epochs=1, imgsz=160, batch=8, device=0, verbose=False)
-print('训练成功!' if results else '失败')
-"
-```
-
-## 测试检查清单
-
-- [ ] GPU 检测成功
-- [ ] 依赖安装成功
-- [ ] 模型下载成功
-- [ ] Business API 启动成功 (port 8000)
-- [ ] Training API 启动成功 (port 8001)
-- [ ] 数据集搜索 (需要 API Keys)
-- [ ] 训练任务提交成功
-- [ ] 训练状态监控正常
-- [ ] 直接训练完成
-- [ ] mAP50 > 0
-- [ ] ONNX 导出成功
-
 ## 故障排除
 
-### ModuleNotFoundError
+### ModuleNotFoundError: No module named 'api'
 
-如果遇到模块导入错误，确保在克隆项目后设置了正确的 sys.path：
+**问题**: Colab 克隆代码后 `__init__.py` 文件可能缺失。
 
+**解决方案**: Notebook Step 3 会自动创建 `__init__.py` 文件。如果仍然报错，尝试：
+
+1. 重启 Runtime: Runtime → Restart runtime
+2. 重新运行所有 cells: Runtime → Run all
+
+### sys.path 顺序问题
+
+**问题**: 模块导入时找到错误的包。
+
+**解决方案**: Notebook Step 4 会清理并重新设置 sys.path：
 ```python
-import sys
-sys.path.insert(0, '/content/yolo-auto-trainning')
-sys.path.insert(0, '/content/yolo-auto-trainning/training-api/src')
+# 清理旧的路径
+sys.path = [p for p in sys.path if 'yolo-auto-trainning' not in p]
+# 设置正确的顺序
+sys.path.insert(0, f"{PROJECT_ROOT}/business-api/src")
+sys.path.append(f"{PROJECT_ROOT}/training-api/src")
 ```
+
+### Redis 连接问题
+
+**问题**: Colab 没有 Redis 服务。
+
+**解决方案**: Notebook 会设置 `DISABLE_REDIS=1`，API 会在没有 Redis 的情况下运行（速率限制将被禁用）。
 
 ### 训练超时
 
@@ -147,9 +150,38 @@ Colab 免费版运行时间有限 (~90分钟)。如果训练超时：
 - 使用更小的模型 (yolo11n)
 - 使用更小的图像尺寸 (320)
 
-### API 服务停止
+## 测试检查清单
 
-如果 API 服务在后台线程中停止，可以使用 Pro/Pro+ 获得更长运行时间。
+- [ ] GPU 检测成功
+- [ ] 依赖安装成功
+- [ ] 项目克隆成功
+- [ ] __init__.py 文件创建成功
+- [ ] Business API 启动成功 (port 8000)
+- [ ] Training API 启动成功 (port 8001)
+- [ ] 健康检查通过
+- [ ] 数据集搜索成功 (demo 数据)
+- [ ] 训练任务提交成功
+- [ ] 训练状态查询成功
+- [ ] 直接训练完成 (mAP50 > 0)
+- [ ] ONNX 导出成功
+
+## 本地测试验证
+
+在推送 Colab 测试之前，已在本地验证以下 API 端点：
+
+```bash
+# Business API 测试
+curl http://localhost:8000/health
+curl -X POST http://localhost:8000/api/v1/data/search \
+  -H "X-API-Key: test-api-key" \
+  -d '{"query": "yolo", "max_results": 5}'
+
+# Training API 测试
+curl http://localhost:8001/health
+curl -X POST http://localhost:8001/api/v1/internal/train/start \
+  -H "X-API-Key: test-training-key" \
+  -d '{"task_id": "test-001", "model": "yolo11n", "data_yaml": "coco128.yaml", "epochs": 1, "device": "cpu"}'
+```
 
 ## 下一步
 
@@ -157,5 +189,5 @@ Colab 免费版运行时间有限 (~90分钟)。如果训练超时：
 
 1. **HPO 超参数优化** - 使用 Ray Tune 进行超参搜索
 2. **模型导出** - 测试 ONNX/TensorRT 导出
-3. **完整 API** - 启动 Business API + Training API
+3. **真实数据集** - 使用 Roboflow/Kaggle/HuggingFace API Keys
 4. **分布式训练** - 多 GPU 或多节点训练
