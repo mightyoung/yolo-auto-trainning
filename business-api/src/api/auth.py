@@ -62,11 +62,15 @@ def get_redis_client():
 
 
 # Import redis conditionally
-try:
-    import redis
-    REDIS_AVAILABLE = True
-except ImportError:
+# Check DISABLE_REDIS env var for environments without Redis (e.g., Google Colab)
+if os.getenv("DISABLE_REDIS", "").lower() in ("1", "true", "yes"):
     REDIS_AVAILABLE = False
+else:
+    try:
+        import redis
+        REDIS_AVAILABLE = True
+    except ImportError:
+        REDIS_AVAILABLE = False
 
 
 class CurrentUser:

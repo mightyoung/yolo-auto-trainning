@@ -48,7 +48,10 @@ if not INTERNAL_API_KEY:
 
 
 def get_redis_client():
-    """Get Redis client."""
+    """Get Redis client. Returns None if Redis is disabled or unavailable."""
+    # Check DISABLE_REDIS env var for environments without Redis (e.g., Google Colab)
+    if os.getenv("DISABLE_REDIS", "").lower() in ("1", "true", "yes"):
+        return None
     try:
         return redis.from_url(REDIS_URL, decode_responses=True)
     except Exception:
