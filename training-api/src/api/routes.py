@@ -9,6 +9,8 @@ Contains internal endpoints for:
 """
 
 import sys
+import asyncio
+import logging
 from pathlib import Path
 
 # Add project root to sys.path to access main src/ module
@@ -86,10 +88,76 @@ tasks_db = {}
 
 # ==================== Training Endpoints ====================
 
+def _run_training_sync(
+    task_id: str,
+    model: str,
+    data_yaml: str,
+    epochs: int,
+    imgsz: int,
+    batch: int,
+    output_dir: str,
+    device: str,
+) -> None:
+    """Run YOLO training synchronously. Called from background task."""
+    import os
+    from pathlib import Path
+    # Import here to avoid import-time errors on systems without GPU
+    from src.training.runner import YOLOTrainer
+    from src.training.config import DEFAULT_TRAINING_CONFIG
+
+    try:
+        logging.info(f"[{task_id}] Starting training: model={model}, data={data_yaml}, epochs={epochs}, device={device}")
+
+        # Update status to running
+        tasks_db[task_id]["status"] = "running"
+        tasks_db[task_id]["started_at"] = datetime.now().isoformat()
+
+        # Create runner
+        runner = YOLOTrainer(
+            model=model,
+            output_dir=Path(output_dir),
+        )
+
+        # Create training config
+        config = DEFAULT_TRAINING_CONFIG
+        config.epochs = epochs
+        config.imgsz = imgsz
+        config.batch = batch
+        config.device = device
+        logging.info(f"[{task_id}] Config device after assignment: {config.device}")
+        logging.info(f"[{task_id}] Config to_dict device: {config.to_dict().get('device')}")
+
+        # Run training
+        result = runner.train(
+            data_yaml=Path(data_yaml),
+            config=config,
+        )
+
+        # Update with results
+        if result.status == "completed":
+            tasks_db[task_id]["status"] = "completed"
+            tasks_db[task_id]["progress"] = 100.0
+            tasks_db[task_id]["metrics"] = result.metrics or {}
+            tasks_db[task_id]["model_path"] = str(result.model_path) if result.model_path else None
+            logging.info(f"[{task_id}] Training completed successfully")
+        else:
+            tasks_db[task_id]["status"] = "failed"
+            tasks_db[task_id]["error"] = result.error or "Unknown error"
+            logging.error(f"[{task_id}] Training failed: {result.error}")
+
+    except Exception as e:
+        logging.error(f"[{task_id}] Training exception: {e}", exc_info=True)
+        tasks_db[task_id]["status"] = "failed"
+        tasks_db[task_id]["error"] = str(e)
+    finally:
+        tasks_db[task_id]["completed_at"] = datetime.now().isoformat()
+
+
 @router.post("/train/start")
 async def start_training(
     request: TrainStartRequest,
     http_request: Request,
+    background_tasks: BackgroundTasks,
     x_api_key: str = Header(..., alias="X-API-Key"),
     _: None = Depends(check_rate_limit)
 ):
@@ -116,9 +184,20 @@ async def start_training(
         "created_at": datetime.now().isoformat()
     }
 
-    # TODO: Actually start training in background
-    # For now, simulate task submission
-    background_tasks = BackgroundTasks()
+    # Start training in background thread (sync YOLO training in thread pool)
+    loop = asyncio.get_event_loop()
+    loop.run_in_executor(
+        None,
+        _run_training_sync,
+        task_id,
+        request.model,
+        request.data_yaml,
+        request.epochs,
+        request.imgsz,
+        request.batch,
+        request.output_dir,
+        request.device,
+    )
 
     return {
         "task_id": task_id,

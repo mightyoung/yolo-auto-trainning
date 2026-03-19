@@ -215,11 +215,39 @@ The system consists of **three independent FastAPI services** that communicate o
 | Variable | Purpose | Default |
 |----------|---------|---------|
 | `REDIS_URL` | Redis connection | `redis://localhost:6379/0` |
+| `REDIS_PASSWORD` | Redis password | none |
 | `TRAINING_API_URL` | Training API address | `http://localhost:8001` |
 | `TRAINING_API_KEY` | Internal API key | `default-key` |
+| `INTERNAL_API_KEY` | Training API gateway key | required |
 | `JWT_SECRET_KEY` | JWT signing key | auto-generated |
 | `DEEPSEEK_API_KEY` | LLM for CrewAI agents | required |
 | `MLFLOW_TRACKING_URI` | MLflow server | `http://localhost:5000` |
+| `TRAINING_GPU_DEVICE` | GPU index for training | `1` (GPU 1 on Changshu server) |
+
+### GPU Server Deployment
+
+**GPU Server**: 192.168.11.3 (wangxin/123123)
+- 3x Tesla T4 GPUs (CUDA 11.4 / Driver 470.82.01)
+- GPU 1 is the designated training GPU (free, 16GB)
+- PyTorch: `2.6.0+cu118` (CUDA 11.8 compatible with driver 470.82)
+
+**Deploy script**: `final_deploy.py` — kills old process, uploads all files, clears bytecode cache, restarts Training API on port 8001, runs E2E
+
+**GPU startup**: `startup_gpu.py` sets `CUDA_VISIBLE_DEVICES=1` BEFORE any torch import to expose GPU 1
+
+**Training API runs on**: `http://192.168.11.3:8001`
+**Business API runs on**: `http://localhost:8000`
+
+**E2E test command**:
+```
+python final_deploy.py
+```
+
+**Common fixes applied**:
+- `runner.py`: Removed duplicate `epochs`/`imgsz`/`batch` args from `model.train()` calls (conflicts with `**config.to_dict()`)
+- `config.py`: Added `device: str = "cuda:0"` field with `to_dict()` inclusion
+- `business-api/routes.py`: Changed `device="cuda:1"` → `device="cuda:0"` in `start_training()` call
+- PyTorch CUDA 11.8 installed to match driver 470.82.01 (was CUDA 12.4 which requires newer driver)
 
 ---
 

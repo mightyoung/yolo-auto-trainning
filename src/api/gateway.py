@@ -47,6 +47,7 @@ REFRESH_TOKEN_EXPIRE_DAYS = 7  # 7 days
 
 # Redis settings
 REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379/0")
+REDIS_PASSWORD = os.getenv("REDIS_PASSWORD")
 
 # Redis connection pool (singleton)
 _redis_pool: redis.ConnectionPool = None
@@ -62,6 +63,7 @@ def get_redis_client():
         if _redis_pool is None:
             _redis_pool = redis.ConnectionPool.from_url(
                 REDIS_URL,
+                password=REDIS_PASSWORD,
                 decode_responses=True,
                 max_connections=20
             )

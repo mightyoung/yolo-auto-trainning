@@ -103,6 +103,14 @@ Desktop.ini
 docs/_build/
 site/
 
+# Deployment & helper scripts (contain credentials - NEVER commit)
+final_deploy.py
+startup_gpu.py
+deploy_online.sh
+deploy_training_api_gpu.sh
+task_plan_e2e.md
+task_plan_react_migration.md
+
 # npm / Node (for web-ui-react)
 web-ui-react/node_modules/
 web-ui-react/.next/

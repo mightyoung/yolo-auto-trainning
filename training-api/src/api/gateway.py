@@ -40,6 +40,7 @@ JWT_ALGORITHM = "HS256"
 
 # Redis settings
 REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379/0")
+REDIS_PASSWORD = os.getenv("REDIS_PASSWORD")
 
 # Internal API Key - must be set in environment
 INTERNAL_API_KEY = os.getenv("INTERNAL_API_KEY")
@@ -53,7 +54,7 @@ def get_redis_client():
     if os.getenv("DISABLE_REDIS", "").lower() in ("1", "true", "yes"):
         return None
     try:
-        return redis.from_url(REDIS_URL, decode_responses=True)
+        return redis.from_url(REDIS_URL, password=REDIS_PASSWORD, decode_responses=True)
     except Exception:
         return None
 

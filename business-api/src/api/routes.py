@@ -368,7 +368,10 @@ async def submit_training(
             model=request.model,
             data_yaml=request.data_yaml,
             epochs=request.epochs,
-            imgsz=request.imgsz
+            imgsz=request.imgsz,
+            output_dir=f"/home/wangxin/runs/{task_id}",
+            batch=request.batch if hasattr(request, 'batch') and request.batch else 16,
+            device="cuda:0",
         )
 
         # Store task in Redis with user_id for isolation
@@ -426,7 +429,7 @@ async def submit_training(
 @train_router.get("/status/{task_id}", response_model=TrainStatusResponse)
 async def get_training_status(
     task_id: str,
-    request: Request,
+    http_request: Request,
     current_user: CurrentUser = Depends(get_current_user),
     _: None = Depends(check_rate_limit)
 ):
@@ -455,7 +458,7 @@ async def get_training_status(
             user_id=current_user.user_id,
             action="status_check",
             task_id=task_id,
-            request=request,
+            request=http_request,
             details={"status": result.get("status")}
         )
 
@@ -479,7 +482,7 @@ async def get_training_status(
 @train_router.post("/cancel/{task_id}")
 async def cancel_training(
     task_id: str,
-    request: Request,
+    http_request: Request,
     current_user: CurrentUser = Depends(get_current_user),
     _: None = Depends(check_rate_limit)
 ):
@@ -508,7 +511,7 @@ async def cancel_training(
             user_id=current_user.user_id,
             action="cancel",
             task_id=task_id,
-            request=request
+            request=http_request
         )
 
         return {

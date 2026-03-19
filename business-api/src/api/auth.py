@@ -15,6 +15,7 @@ import os
 import secrets
 from datetime import datetime, timedelta, timezone
 
+import redis
 from fastapi import Depends, HTTPException, status, Request
 from fastapi.security import APIKeyHeader, HTTPBearer, HTTPAuthorizationCredentials
 import time
@@ -41,6 +42,7 @@ BUSINESS_API_KEY = os.getenv("BUSINESS_API_KEY", "default-business-api-key")
 
 # Redis settings
 REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379/0")
+REDIS_PASSWORD = os.getenv("REDIS_PASSWORD")
 
 # Redis connection pool (singleton)
 _redis_pool = None
@@ -53,6 +55,7 @@ def get_redis_client():
         if _redis_pool is None:
             _redis_pool = redis.ConnectionPool.from_url(
                 REDIS_URL,
+                password=REDIS_PASSWORD,
                 decode_responses=True,
                 max_connections=20
             )

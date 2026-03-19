@@ -95,15 +95,11 @@ class YOLOTrainer:
 
         results = model.train(
             data=str(data_yaml),
-            epochs=config.epochs,
-            imgsz=config.imgsz,
-            batch=config.batch,
-            patience=config.patience,
-            cache=config.cache,
             project=str(self.output_dir),
             name="sanity_check",
             exist_ok=True,
             verbose=False,
+            **config.to_dict(),
         )
 
         map50 = results.results_dict.get("metrics/mAP50(B)", 0)
@@ -174,9 +170,6 @@ class YOLOTrainer:
         try:
             results = model.train(
                 data=str(data_yaml),
-                epochs=epochs,
-                imgsz=config.imgsz,
-                batch=config.batch,
                 project=str(self.output_dir),
                 name="train",
                 exist_ok=True,

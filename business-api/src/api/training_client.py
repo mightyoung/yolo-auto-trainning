@@ -33,7 +33,7 @@ class TrainingAPIClient:
     def _get_headers(self) -> Dict[str, str]:
         """Get headers for API requests."""
         return {
-            "Authorization": f"Bearer {self.api_key}",
+            "X-API-Key": self.api_key,
             "Content-Type": "application/json"
         }
 
@@ -44,7 +44,9 @@ class TrainingAPIClient:
         data_yaml: str,
         epochs: int,
         imgsz: int = 640,
-        output_dir: str = "/runs"
+        output_dir: str = "/runs",
+        batch: int = 16,
+        device: str = "cuda:0"
     ) -> Dict[str, Any]:
         """
         Submit a training job to the training API.
@@ -56,6 +58,8 @@ class TrainingAPIClient:
             epochs: Number of training epochs
             imgsz: Input image size
             output_dir: Output directory for training results
+            batch: Batch size
+            device: Device (e.g., cuda:0, cuda:1)
 
         Returns:
             Response containing task_id and status
@@ -69,7 +73,9 @@ class TrainingAPIClient:
                     "data_yaml": data_yaml,
                     "epochs": epochs,
                     "imgsz": imgsz,
-                    "output_dir": output_dir
+                    "output_dir": output_dir,
+                    "batch": batch,
+                    "device": device
                 },
                 headers=self._get_headers()
             )

@@ -55,6 +55,7 @@ class TrainingConfig:
     optimizer: str = "SGD"
     amp: bool = True            # Automatic Mixed Precision
     cache: bool = False         # Cache images
+    device: str = "cuda:0"      # Device for training
 
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary for YOLO training."""
@@ -90,6 +91,7 @@ class TrainingConfig:
             "optimizer": self.optimizer,
             "amp": self.amp,
             "cache": self.cache,
+            "device": self.device,
         }
 
 
