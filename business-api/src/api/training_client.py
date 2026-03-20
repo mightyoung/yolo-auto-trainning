@@ -82,6 +82,36 @@ class TrainingAPIClient:
             response.raise_for_status()
             return response.json()
 
+    def start_training_sync(
+        self,
+        task_id: str,
+        model: str,
+        data_yaml: str,
+        epochs: int,
+        imgsz: int = 640,
+        output_dir: str = "/runs",
+        batch: int = 16,
+        device: str = "cuda:0"
+    ) -> Dict[str, Any]:
+        """Synchronous version of start_training. Safe to call from background threads."""
+        with httpx.Client(timeout=self.timeout) as client:
+            response = client.post(
+                f"{self.base_url}/api/v1/internal/train/start",
+                json={
+                    "task_id": task_id,
+                    "model": model,
+                    "data_yaml": data_yaml,
+                    "epochs": epochs,
+                    "imgsz": imgsz,
+                    "output_dir": output_dir,
+                    "batch": batch,
+                    "device": device
+                },
+                headers=self._get_headers()
+            )
+            response.raise_for_status()
+            return response.json()
+
     async def start_hpo(
         self,
         task_id: str,
@@ -164,6 +194,44 @@ class TrainingAPIClient:
         async with httpx.AsyncClient(timeout=30) as client:
             response = await client.get(
                 f"{self.base_url}/api/v1/internal/train/status/{task_id}",
+                headers=self._get_headers()
+            )
+            response.raise_for_status()
+            return response.json()
+
+    def get_task_status_sync(self, task_id: str) -> Dict[str, Any]:
+        """
+        Synchronous version of get_task_status.
+        Safe to call from background threads (no asyncio.run() needed).
+
+        Args:
+            task_id: Task identifier
+
+        Returns:
+            Task status including progress and metrics
+        """
+        with httpx.Client(timeout=30) as client:
+            response = client.get(
+                f"{self.base_url}/api/v1/internal/train/status/{task_id}",
+                headers=self._get_headers()
+            )
+            response.raise_for_status()
+            return response.json()
+
+    def get_export_status_sync(self, task_id: str) -> Dict[str, Any]:
+        """
+        Synchronous version of get export task status.
+        Safe to call from background threads.
+
+        Args:
+            task_id: Task identifier
+
+        Returns:
+            Export task status
+        """
+        with httpx.Client(timeout=30) as client:
+            response = client.get(
+                f"{self.base_url}/api/v1/internal/export/status/{task_id}",
                 headers=self._get_headers()
             )
             response.raise_for_status()

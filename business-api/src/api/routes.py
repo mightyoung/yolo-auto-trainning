@@ -138,10 +138,12 @@ class DatasetSearchResponse(BaseModel):
 class TrainRequest(BaseModel):
     """Training request."""
     model: str = Field("yolo11m", description="Model size (n/s/m/l/x)")
+    device: str = Field("cuda:0", description="CUDA device for training")
     data_yaml: str = Field(..., description="Path to dataset YAML")
     epochs: int = Field(100, description="Number of epochs")
     imgsz: int = Field(640, description="Image size")
     task_type: str = Field("training", description="Task type: training/hpo")
+    project: str = "/models/auto-detect"
 
 
 class TrainResponse(BaseModel):
@@ -371,7 +373,7 @@ async def submit_training(
             imgsz=request.imgsz,
             output_dir=f"/home/wangxin/runs/{task_id}",
             batch=request.batch if hasattr(request, 'batch') and request.batch else 16,
-            device="cuda:0",
+            device=request.device,
         )
 
         # Store task in Redis with user_id for isolation
@@ -540,7 +542,7 @@ async def list_tasks(
 
     Requires authentication. Returns only tasks owned by the current user.
     """
-    redis_client = get_redis_client(http_request)
+    redis_client = get_redis_client(request)
     tasks = get_user_tasks_from_redis(redis_client, current_user.user_id)
 
     return TaskListResponse(
@@ -561,7 +563,7 @@ async def delete_task(
 
     Requires authentication. Verifies task ownership.
     """
-    redis_client = get_redis_client(http_request)
+    redis_client = get_redis_client(request)
 
     # Verify ownership and delete
     success = delete_task_from_redis(redis_client, task_id, current_user.user_id)
@@ -655,7 +657,8 @@ async def create_model(
 @train_router.get("/models/registry/{name}")
 async def get_model(
     name: str,
-    http_request: Request,
+    stage: str = None,
+    http_request: Request = None,
     current_user: CurrentUser = Depends(get_current_user),
     _: None = Depends(check_rate_limit)
 ):
@@ -1027,3 +1030,21 @@ async def generate_report(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Report generation failed: {str(e)}"
         )
+
+
+# ==================== Auth ====================
+
+class LoginRequest(BaseModel):
+    username: str
+    password: str
+
+
+@data_router.post("/auth/login", tags=["Auth"])
+async def login(request: LoginRequest):
+    """Simple username/password login for internal use. Returns a JWT token."""
+    valid_users = {"admin": "admin123", "test": "test123"}
+    if request.username not in valid_users or valid_users[request.username] != request.password:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid credentials")
+    from .auth import create_access_token
+    token = create_access_token({"user_id": request.username, "role": "admin"})
+    return {"access_token": token, "token_type": "bearer"}

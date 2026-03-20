@@ -11,24 +11,27 @@ Contains internal endpoints for:
 import sys
 import asyncio
 import logging
+import threading
 from pathlib import Path
 
-# Add project root to sys.path to access main src/ module
-# This allows training-api to import from src.training.mlflow_tracker, etc.
-_project_root = Path(__file__).parent.parent.parent.parent
-if str(_project_root) not in sys.path:
-    sys.path.insert(0, str(_project_root))
+# Add training-api/src to sys.path so 'src' package resolves here (not legacy src/)
+# This prevents legacy /home/wangxin/yolo-auto-training/src/ from shadowing training-api/src/
+_training_api_root = Path(__file__).parent.parent.parent
+if str(_training_api_root) not in sys.path:
+    sys.path.insert(0, str(_training_api_root))
 
+import json
+import os
 import uuid
 from datetime import datetime
-from typing import Optional, List
+from typing import Optional, List, Dict
 
 from fastapi import APIRouter, HTTPException, Header, status, BackgroundTasks, Depends, Request
 from pydantic import BaseModel, Field
 
 # Import verify_internal_api_key from gateway for timing-safe comparison
 # Use relative import since gateway is in the same package
-from .gateway import verify_internal_api_key, check_rate_limit
+from .gateway import verify_internal_api_key, check_rate_limit, get_redis_client
 
 
 # ==================== Request/Response Models ====================
@@ -41,7 +44,7 @@ class TrainStartRequest(BaseModel):
     epochs: int = Field(100, description="Number of epochs")
     imgsz: int = Field(640, description="Image size")
     batch: int = Field(16, description="Batch size")
-    output_dir: str = Field("/runs", description="Output directory")
+    output_dir: str = Field("/home/wangxin/runs", description="Output directory")
     device: str = Field("cuda:0", description="Device")
 
 
@@ -82,8 +85,60 @@ router = APIRouter()
 
 # ==================== Task Storage ====================
 
-# In-memory task storage (in production, use Redis)
-tasks_db = {}
+# Redis-backed task storage with L1 in-memory cache.
+# On reads: check local dict first, then Redis, populate cache on miss.
+# On writes: write-through to both local dict and Redis.
+# Key pattern in Redis: training:task:{task_id}
+
+_redis_client = get_redis_client()
+_tasks_cache: dict = {}
+
+
+def _task_get(task_id: str) -> Optional[dict]:
+    """Read a task. L1 dict cache, then Redis."""
+    if task_id in _tasks_cache:
+        return _tasks_cache[task_id]
+    if _redis_client is None:
+        return None
+    try:
+        key = f"training:task:{task_id}"
+        raw = _redis_client.get(key)
+        if raw:
+            task = json.loads(raw)
+            _tasks_cache[task_id] = task
+            return task
+    except Exception:
+        pass
+    return None
+
+
+def _task_set(task_id: str, task: dict) -> None:
+    """Write a task. Write-through to local cache and Redis."""
+    _tasks_cache[task_id] = task
+    if _redis_client is None:
+        return
+    try:
+        key = f"training:task:{task_id}"
+        _redis_client.set(key, json.dumps(task))
+    except Exception as e:
+        # Log but don't fail the request
+        print(f"[_task_set] Redis write failed for {task_id}: {e}")
+
+
+def _task_del(task_id: str) -> None:
+    """Delete a task from local cache and Redis."""
+    _tasks_cache.pop(task_id, None)
+    if _redis_client is None:
+        return
+    try:
+        _redis_client.delete(f"training:task:{task_id}")
+    except Exception as e:
+        print(f"[_task_del] Redis delete failed for {task_id}: {e}")
+
+
+# Cancellation registry: task_id -> threading.Event
+# Stored separately from task records so Event objects aren't JSON-serialised.
+_cancel_events: dict[str, threading.Event] = {}
 
 
 # ==================== Training Endpoints ====================
@@ -99,18 +154,19 @@ def _run_training_sync(
     device: str,
 ) -> None:
     """Run YOLO training synchronously. Called from background task."""
-    import os
-    from pathlib import Path
     # Import here to avoid import-time errors on systems without GPU
-    from src.training.runner import YOLOTrainer
+    from src.training.runner import YOLOTrainer, TrainingCancelled
     from src.training.config import DEFAULT_TRAINING_CONFIG
+
+    cancel_event = _cancel_events.get(task_id)
 
     try:
         logging.info(f"[{task_id}] Starting training: model={model}, data={data_yaml}, epochs={epochs}, device={device}")
 
         # Update status to running
-        tasks_db[task_id]["status"] = "running"
-        tasks_db[task_id]["started_at"] = datetime.now().isoformat()
+        _tasks_cache[task_id]["status"] = "running"
+        _tasks_cache[task_id]["started_at"] = datetime.now().isoformat()
+        _task_set(task_id, _tasks_cache[task_id])
 
         # Create runner
         runner = YOLOTrainer(
@@ -127,30 +183,98 @@ def _run_training_sync(
         logging.info(f"[{task_id}] Config device after assignment: {config.device}")
         logging.info(f"[{task_id}] Config to_dict device: {config.to_dict().get('device')}")
 
-        # Run training
+        # Progress callback: updates tasks cache and checks cancellation each epoch.
+        def _on_progress(epoch: int, total: int) -> None:
+            progress = ((epoch + 1) / total) * 100.0 if total > 0 else 0.0
+            _tasks_cache[task_id]["current_epoch"] = epoch
+            _tasks_cache[task_id]["total_epochs"] = total
+            _tasks_cache[task_id]["progress"] = progress
+            _task_set(task_id, _tasks_cache[task_id])
+            if cancel_event and cancel_event.is_set():
+                raise TrainingCancelled("Training cancelled by user")
+
+        # Run training with progress tracking
         result = runner.train(
             data_yaml=Path(data_yaml),
             config=config,
+            progress_callback=_on_progress,
         )
 
         # Update with results
         if result.status == "completed":
-            tasks_db[task_id]["status"] = "completed"
-            tasks_db[task_id]["progress"] = 100.0
-            tasks_db[task_id]["metrics"] = result.metrics or {}
-            tasks_db[task_id]["model_path"] = str(result.model_path) if result.model_path else None
+            _tasks_cache[task_id]["status"] = "completed"
+            _tasks_cache[task_id]["progress"] = 100.0
+            _tasks_cache[task_id]["metrics"] = result.metrics or {}
+            _tasks_cache[task_id]["model_path"] = str(result.model_path) if result.model_path else None
             logging.info(f"[{task_id}] Training completed successfully")
+        elif result.status == "cancelled":
+            _tasks_cache[task_id]["status"] = "cancelled"
+            _tasks_cache[task_id]["error"] = "Training cancelled by user"
+            logging.info(f"[{task_id}] Training cancelled")
         else:
-            tasks_db[task_id]["status"] = "failed"
-            tasks_db[task_id]["error"] = result.error or "Unknown error"
+            _tasks_cache[task_id]["status"] = "failed"
+            _tasks_cache[task_id]["error"] = result.error or "Unknown error"
             logging.error(f"[{task_id}] Training failed: {result.error}")
 
+    except TrainingCancelled:
+        # Already handled above; just log
+        logging.info(f"[{task_id}] Training cancelled")
     except Exception as e:
         logging.error(f"[{task_id}] Training exception: {e}", exc_info=True)
-        tasks_db[task_id]["status"] = "failed"
-        tasks_db[task_id]["error"] = str(e)
+        _tasks_cache[task_id]["status"] = "failed"
+        _tasks_cache[task_id]["error"] = str(e)
     finally:
-        tasks_db[task_id]["completed_at"] = datetime.now().isoformat()
+        _tasks_cache[task_id]["completed_at"] = datetime.now().isoformat()
+        # Write to Redis BEFORE returning so polling always sees final state
+        _task_set(task_id, _tasks_cache[task_id])
+        # Clean up cancel event
+        _cancel_events.pop(task_id, None)
+
+
+def _run_export_sync(
+    task_id: str,
+    model_path: str,
+    platform: str,
+    imgsz: int,
+) -> None:
+    """Run model export synchronously. Called from background task."""
+    from src.deployment.exporter import ModelExporter
+
+    try:
+        logging.info(f"[{task_id}] Starting export: model={model_path}, platform={platform}")
+
+        # Update status to running
+        _tasks_cache[task_id]["status"] = "running"
+        _tasks_cache[task_id]["started_at"] = datetime.now().isoformat()
+        _task_set(task_id, _tasks_cache[task_id])
+
+        # Run export
+        exporter = ModelExporter(output_dir=Path(model_path).parent)
+        result = exporter.export(
+            model_path=Path(model_path),
+            platform=platform,
+            imgsz=imgsz,
+        )
+
+        if result.status == "success":
+            _tasks_cache[task_id]["status"] = "completed"
+            _tasks_cache[task_id]["progress"] = 100.0
+            _tasks_cache[task_id]["export_path"] = str(result.model_path)
+            _tasks_cache[task_id]["size_mb"] = result.size_mb
+            _tasks_cache[task_id]["format"] = result.format
+            logging.info(f"[{task_id}] Export completed: {result.model_path} ({result.size_mb:.1f}MB)")
+        else:
+            _tasks_cache[task_id]["status"] = "failed"
+            _tasks_cache[task_id]["error"] = result.error or "Unknown export error"
+            logging.error(f"[{task_id}] Export failed: {result.error}")
+
+    except Exception as e:
+        logging.error(f"[{task_id}] Export exception: {e}", exc_info=True)
+        _tasks_cache[task_id]["status"] = "failed"
+        _tasks_cache[task_id]["error"] = str(e)
+    finally:
+        _tasks_cache[task_id]["completed_at"] = datetime.now().isoformat()
+        _task_set(task_id, _tasks_cache[task_id])
 
 
 @router.post("/train/start")
@@ -173,7 +297,7 @@ async def start_training(
 
     # Create task record
     task_id = request.task_id
-    tasks_db[task_id] = {
+    _task_set(task_id, {
         "task_id": task_id,
         "type": "training",
         "status": "submitted",
@@ -181,8 +305,13 @@ async def start_training(
         "data_yaml": request.data_yaml,
         "epochs": request.epochs,
         "progress": 0.0,
+        "current_epoch": 0,
+        "total_epochs": request.epochs,
         "created_at": datetime.now().isoformat()
-    }
+    })
+
+    # Create cancel event for this task
+    _cancel_events[task_id] = threading.Event()
 
     # Start training in background thread (sync YOLO training in thread pool)
     loop = asyncio.get_event_loop()
@@ -215,7 +344,8 @@ async def get_training_status(
     _: None = Depends(check_rate_limit)
 ):
     """
-    Get training job status.
+    Get training job status. Auto-resubmits tasks stuck in "submitted" for >60s
+    (e.g. after a server restart that lost the background thread).
     """
     # Verify API key
     if not verify_internal_api_key(x_api_key):
@@ -224,13 +354,83 @@ async def get_training_status(
             detail="Invalid API key"
         )
 
-    if task_id not in tasks_db:
+    task = _task_get(task_id)
+    if task is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Task {task_id} not found"
         )
 
-    task = tasks_db[task_id]
+    # Nested helper for auto-resubmit — defined BEFORE any calls
+    def _do_resubmit(candidate):
+        nonlocal task
+        # Ensure cancel event exists
+        if task_id not in _cancel_events:
+            _cancel_events[task_id] = threading.Event()
+        # Update Redis + cache to running and restart background executor
+        _task_set(task_id, {
+            **candidate,
+            "status": "running",
+            "started_at": datetime.now().isoformat(),
+            "progress": 0.0,
+            "current_epoch": 0,
+            "error": None,
+        })
+        task["status"] = "running"
+        task["started_at"] = datetime.now().isoformat()
+        task["progress"] = 0.0
+        task["current_epoch"] = 0
+        task["error"] = None
+        # Fire the background thread using fresh Redis data
+        loop = asyncio.get_event_loop()
+        loop.run_in_executor(
+            None,
+            _run_training_sync,
+            task_id,
+            candidate.get("model", "yolo11m"),
+            candidate.get("data_yaml"),
+            candidate.get("epochs", 100),
+            candidate.get("imgsz", 640),
+            candidate.get("batch", 16),
+            candidate.get("output_dir", "/home/wangxin/runs"),
+            candidate.get("device", "cuda:0"),
+        )
+
+    # Auto-resubmit: if task is stuck in "submitted" for >60s in Redis, the background
+    # executor was likely lost (e.g. server restart that lost the background thread).
+    # Read from Redis directly to bypass stale in-memory cache.
+    _redis_client_local = get_redis_client()
+    resubmit_candidate = None
+    if _redis_client_local is not None:
+        try:
+            raw = _redis_client_local.get(f"training:task:{task_id}")
+            if raw:
+                resubmit_candidate = json.loads(raw)
+        except Exception:
+            pass
+
+    if resubmit_candidate and resubmit_candidate.get("status") == "submitted":
+        created_str = resubmit_candidate.get("created_at")
+        resubmit = False
+        if created_str:
+            try:
+                created = datetime.fromisoformat(created_str)
+                age = (datetime.now() - created).total_seconds()
+                resubmit = age > 60
+            except Exception:
+                resubmit = True  # If we can't parse, assume it's stuck
+        else:
+            resubmit = True
+
+        if resubmit:
+            logging.warning(f"[{task_id}] Task stuck in 'submitted' — auto-resubmitting")
+            _do_resubmit(resubmit_candidate)
+
+    # Also auto-resubmit failed tasks (e.g. due to TypeError, OOM, etc.)
+    elif resubmit_candidate and resubmit_candidate.get("status") == "failed":
+        logging.warning(f"[{task_id}] Task previously failed ({resubmit_candidate.get('error','?')[:80]}) — auto-resubmitting")
+        _do_resubmit(resubmit_candidate)
+
     return TrainStatusResponse(
         task_id=task["task_id"],
         status=task.get("status", "unknown"),
@@ -261,14 +461,21 @@ async def cancel_training(
             detail="Invalid API key"
         )
 
-    if task_id not in tasks_db:
+    task = _task_get(task_id)
+    if task is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Task {task_id} not found"
         )
 
-    tasks_db[task_id]["status"] = "cancelled"
-    tasks_db[task_id]["cancelled_at"] = datetime.now().isoformat()
+    _tasks_cache[task_id]["status"] = "cancelled"
+    _tasks_cache[task_id]["cancelled_at"] = datetime.now().isoformat()
+    _task_set(task_id, _tasks_cache[task_id])
+
+    # Signal the training thread to abort at the next epoch boundary
+    cancel_event = _cancel_events.get(task_id)
+    if cancel_event:
+        cancel_event.set()
 
     return {
         "task_id": task_id,
@@ -297,7 +504,7 @@ async def start_hpo(
         )
 
     task_id = request.task_id
-    tasks_db[task_id] = {
+    _task_set(task_id, {
         "task_id": task_id,
         "type": "hpo",
         "status": "submitted",
@@ -305,7 +512,7 @@ async def start_hpo(
         "n_trials": request.n_trials,
         "progress": 0.0,
         "created_at": datetime.now().isoformat()
-    }
+    })
 
     return {
         "task_id": task_id,
@@ -329,13 +536,14 @@ async def get_hpo_status(
             detail="Invalid API key"
         )
 
-    if task_id not in tasks_db:
+    task = _task_get(task_id)
+    if task is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Task {task_id} not found"
         )
 
-    return tasks_db[task_id]
+    return task
 
 
 # ==================== Export Endpoints ====================
@@ -344,6 +552,7 @@ async def get_hpo_status(
 async def start_export(
     request: ExportStartRequest,
     http_request: Request,
+    background_tasks: BackgroundTasks,
     x_api_key: str = Header(..., alias="X-API-Key"),
     _: None = Depends(check_rate_limit)
 ):
@@ -358,7 +567,7 @@ async def start_export(
         )
 
     task_id = request.task_id
-    tasks_db[task_id] = {
+    _task_set(task_id, {
         "task_id": task_id,
         "type": "export",
         "status": "submitted",
@@ -366,7 +575,18 @@ async def start_export(
         "platform": request.platform,
         "progress": 0.0,
         "created_at": datetime.now().isoformat()
-    }
+    })
+
+    # Launch background export thread
+    loop = asyncio.get_event_loop()
+    loop.run_in_executor(
+        None,
+        _run_export_sync,
+        task_id,
+        request.model_path,
+        request.platform,
+        request.imgsz,
+    )
 
     return {
         "task_id": task_id,
@@ -390,13 +610,14 @@ async def get_export_status(
             detail="Invalid API key"
         )
 
-    if task_id not in tasks_db:
+    task = _task_get(task_id)
+    if task is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Task {task_id} not found"
         )
 
-    return tasks_db[task_id]
+    return task
 
 
 # ==================== Auto Label Endpoints ====================
@@ -442,7 +663,7 @@ async def submit_labeling(
     task_id = request.task_id
 
     # Store task
-    tasks_db[task_id] = {
+    _task_set(task_id, {
         "task_id": task_id,
         "type": "labeling",
         "status": "submitted",
@@ -451,7 +672,7 @@ async def submit_labeling(
         "base_model": request.base_model,
         "progress": 0.0,
         "created_at": datetime.now().isoformat()
-    }
+    })
 
     # Note: Actual labeling runs in background
     # For now, return task info
@@ -480,13 +701,12 @@ async def get_labeling_status(
             detail="Invalid API key"
         )
 
-    if task_id not in tasks_db:
+    task = _task_get(task_id)
+    if task is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Task {task_id} not found"
         )
-
-    task = tasks_db[task_id]
     if task.get("type") != "labeling":
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -526,7 +746,7 @@ async def start_distillation(
         )
 
     task_id = request.task_id
-    tasks_db[task_id] = {
+    _task_set(task_id, {
         "task_id": task_id,
         "type": "distillation",
         "status": "submitted",
@@ -536,7 +756,7 @@ async def start_distillation(
         "epochs": request.epochs,
         "progress": 0.0,
         "created_at": datetime.now().isoformat()
-    }
+    })
 
     return {
         "task_id": task_id,

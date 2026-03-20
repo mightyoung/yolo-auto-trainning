@@ -16,6 +16,9 @@ import asyncio
 from datetime import datetime, timedelta, timezone
 import secrets
 
+from dotenv import load_dotenv
+load_dotenv()  # Load business-api/.env
+
 from fastapi import FastAPI, Request, HTTPException, status, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import APIKeyHeader, HTTPBearer, HTTPAuthorizationCredentials

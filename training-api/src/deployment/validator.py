@@ -94,21 +94,39 @@ class ModelValidator:
 
     @staticmethod
     def _validate_onnx(model_path: Path, file_size: int) -> Dict[str, Any]:
-        """Validate ONNX model format by checking header."""
+        """Validate ONNX model format using the onnx library."""
         try:
-            with open(model_path, "rb") as f:
-                header = f.read(8)
-                # ONNX files start with ONNX magic number
-                if not header.startswith(b"ONNX"):
-                    return {
-                        "valid": False,
-                        "error": "Invalid ONNX header - file does not start with 'ONNX'",
-                    }
+            import onnx
+            model = onnx.load(str(model_path))
+            onnx.checker.check_model(model)
             return {
                 "valid": True,
                 "file_size": file_size,
                 "format": "onnx",
             }
+        except ImportError:
+            # Fallback: check protobuf IR version header
+            # ONNX protobuf files start with 0x08 0x04 (field 1, type 4 = Length-delimited)
+            # followed by the ONNX ir_version field
+            try:
+                with open(model_path, "rb") as f:
+                    header = f.read(8)
+                if header[:2] == b"\x08\x04":
+                    return {
+                        "valid": True,
+                        "file_size": file_size,
+                        "format": "onnx",
+                        "note": "validated by header check (onnx library not available)",
+                    }
+                return {
+                    "valid": False,
+                    "error": "Invalid ONNX file - does not start with ONNX protobuf header",
+                }
+            except Exception as e:
+                return {
+                    "valid": False,
+                    "error": f"ONNX validation failed: {e}",
+                }
         except Exception as e:
             return {
                 "valid": False,

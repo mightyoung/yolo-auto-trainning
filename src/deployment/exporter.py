@@ -10,7 +10,7 @@ Reference: https://docs.ultralytics.com/integrations/tensorrt/
 """
 
 from pathlib import Path
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, List
 from dataclasses import dataclass
 
 from ultralytics import YOLO

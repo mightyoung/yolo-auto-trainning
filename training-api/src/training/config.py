@@ -45,6 +45,7 @@ class TrainingConfig:
     epochs: int = 100
     imgsz: int = 640
     batch: int = 16
+    device: str = "cuda:0"      # GPU device for training
     patience: int = 100         # Early stopping
     warmup_epochs: float = 3.0  # Warmup
     warmup_momentum: float = 0.8

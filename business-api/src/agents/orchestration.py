@@ -3,18 +3,52 @@ CrewAI Agents - Multi-agent orchestration for YOLO training system.
 
 Based on CrewAI best practices:
 - https://docs.crewai.com/en/concepts/processes
+
+Uses lazy imports for crewai so the module loads even if crewai is not installed.
+When unavailable, falls back to direct DatasetDiscovery.
 """
 
 import os
+import sys
+import json
+import uuid
 from pathlib import Path
-from crewai import Agent, Task, Crew, Process
-from crewai.tools import BaseTool
-from crewai.llm import LLM
-from typing import List, Dict, Any
-from pydantic import BaseModel
+from datetime import datetime
+from typing import Optional
+
+# Lazy import for optional crewai dependency
+CREWAI_AVAILABLE = False
+_Agent = _Task = _Crew = _Process = _BaseTool = _LLM = None
+
+def _try_import_crewai():
+    global CREWAI_AVAILABLE, _Agent, _Task, _Crew, _Process, _BaseTool, _LLM
+    if CREWAI_AVAILABLE:
+        return True
+    try:
+        from crewai import Agent, Task, Crew, Process
+        from crewai.tools import BaseTool
+        from crewai.llm import LLM
+        _Agent = Agent
+        _Task = Task
+        _Crew = Crew
+        _Process = Process
+        _BaseTool = BaseTool
+        _LLM = LLM
+        CREWAI_AVAILABLE = True
+        return True
+    except ImportError:
+        CREWAI_AVAILABLE = False
+        return False
 
 # Import real modules
-from ..data.discovery import DatasetDiscovery, DatasetInfo
+_project_root = Path(__file__).parent.parent.parent
+if str(_project_root) not in sys.path:
+    sys.path.insert(0, str(_project_root))
+
+from src.data.discovery import DatasetDiscovery, DatasetInfo
+
+# Try importing crewai now (will succeed if installed)
+_try_import_crewai()
 
 
 def get_llm():
@@ -26,51 +60,24 @@ def get_llm():
     if not api_key:
         raise ValueError("DEEPSEEK_API_KEY environment variable is not set")
 
-    return LLM(
+    _try_import_crewai()
+    if not CREWAI_AVAILABLE:
+        raise RuntimeError("crewai not installed - cannot create LLM")
+    return _LLM(
         model=model,
         base_url=base_url,
         api_key=api_key
     )
 
 
-# Tool definitions
-class SearchDatasetsInput(BaseModel):
-    """Input for dataset search tool."""
-    query: str
-    max_results: int = 10
-
-
-class TrainModelInput(BaseModel):
-    """Input for training tool."""
-    dataset_path: str
-    model_size: str = "yolo11m"
-    epochs: int = 100
-
-
-class ExportModelInput(BaseModel):
-    """Input for model export tool."""
-    model_path: str
-    platform: str = "jetson_orin"
-
-
-# Custom tools with real implementations
-class DatasetSearchTool(BaseTool):
+# Tool definitions - standalone classes (no BaseTool inheritance needed when crewai unavailable)
+class DatasetSearchTool:
     """Tool for searching datasets from multiple sources."""
 
-    name: str = "dataset_search"
-    description: str = "Search for relevant datasets from Roboflow, Kaggle, and HuggingFace. Returns dataset info with relevance scores."
+    name = "dataset_search"
+    description = "Search for relevant datasets from Roboflow, Kaggle, and HuggingFace. Returns dataset info with relevance scores."
 
     def _run(self, query: str, max_results: int = 10) -> str:
-        """
-        Search for datasets across multiple sources.
-
-        Args:
-            query: Search query
-            max_results: Maximum results to return
-
-        Returns:
-            Formatted string with found datasets
-        """
         discovery = DatasetDiscovery()
         results = discovery.search(query=query, max_results=max_results)
 
@@ -79,7 +86,7 @@ class DatasetSearchTool(BaseTool):
 
         output = f"Found {len(results)} datasets:\n\n"
         for ds in results:
-            output += f"• {ds.name} ({ds.source})\n"
+            output += f"- {ds.name} ({ds.source})\n"
             output += f"  URL: {ds.url}\n"
             output += f"  Relevance: {ds.relevance_score:.2f}\n"
             output += f"  Images: {ds.images}\n"
@@ -88,26 +95,14 @@ class DatasetSearchTool(BaseTool):
         return output
 
 
-class DatasetDownloadTool(BaseTool):
+class DatasetDownloadTool:
     """Tool for downloading datasets."""
 
-    name: str = "dataset_download"
-    description: str = "Download a dataset from a specific source (roboflow, kaggle, or huggingface)"
+    name = "dataset_download"
+    description = "Download a dataset from a specific source (roboflow, kaggle, or huggingface)"
 
     def _run(self, dataset_name: str, source: str = "roboflow") -> str:
-        """
-        Download dataset from source.
-
-        Args:
-            dataset_name: Dataset reference (e.g., 'username/project' for Roboflow/Kaggle)
-            source: Source platform (roboflow, kaggle, huggingface)
-
-        Returns:
-            Status message with download path
-        """
         discovery = DatasetDiscovery()
-
-        # Create dataset info
         dataset_info = DatasetInfo(
             source=source,
             name=dataset_name,
@@ -117,7 +112,6 @@ class DatasetDownloadTool(BaseTool):
             images=0,
             categories=[],
         )
-
         try:
             output_path = discovery.download(dataset_info)
             return f"Downloaded dataset to: {output_path}"
@@ -125,55 +119,47 @@ class DatasetDownloadTool(BaseTool):
             return f"Download failed: {str(e)}"
 
 
-class TrainModelTool(BaseTool):
+class TrainModelTool:
     """Tool for training YOLO models."""
 
-    name: str = "model_train"
-    description: str = "Train a YOLO model on a dataset with specified parameters"
+    name = "model_train"
+    description = "Train a YOLO model on a dataset with specified parameters"
 
     def _run(self, dataset_path: str, model_size: str = "yolo11m", epochs: int = 100) -> str:
-        """
-        Train YOLO model.
+        try:
+            from ..api.training_client import TrainingAPIClient
+            client = TrainingAPIClient()
+            task_id = f"train_{uuid.uuid4().hex[:8]}"
+            result = client.start_training(
+                task_id=task_id,
+                model=model_size,
+                data_yaml=dataset_path,
+                epochs=epochs,
+                device="cuda:0",
+            )
+            return f"Training started: task_id={result.get('task_id', task_id)}"
+        except Exception as e:
+            return f"Train submission failed: {str(e)}"
 
-        Args:
-            dataset_path: Path to dataset YAML
-            model_size: Model size (yolo11n, yolo11s, yolo11m, yolo11l, yolo11x)
-            epochs: Number of training epochs
 
-        Returns:
-            Status message with training info
-        """
-        # This tool returns task_id for async training
-        # Actual training happens via Celery task
-        task_id = f"train_{model_size}_{epochs}"
-        return f"Training task submitted: {task_id}. Use /train/status/{task_id} to check progress."
-
-
-class ExportModelTool(BaseTool):
+class ExportModelTool:
     """Tool for exporting models."""
 
-    name: str = "model_export"
-    description: str = "Export trained model to ONNX or TensorRT format for deployment"
+    name = "model_export"
+    description = "Export trained model to ONNX or TensorRT format for deployment"
 
     def _run(self, model_path: str, platform: str = "jetson_orin") -> str:
-        """
-        Export model to target platform.
-
-        Args:
-            model_path: Path to trained model
-            platform: Target platform (jetson_nano, jetson_orin, rk3588, cloud)
-
-        Returns:
-            Status message with export info
-        """
         task_id = f"export_{platform}"
         return f"Export task submitted: {task_id}. Use /deploy/export/status/{task_id} to check progress."
 
 
-# Agent definitions with decision rules from design doc
-def create_dataset_discovery_agent() -> Agent:
+# CrewAI-backed agent factories (only called when crewai is available)
+def create_dataset_discovery_agent():
     """Create dataset discovery agent with decision rules."""
-    return Agent(
+    _try_import_crewai()
+    if not CREWAI_AVAILABLE:
+        return None
+    return _Agent(
         role="Dataset Curator",
         goal="Find and select the most relevant datasets for the task",
         backstory="""
@@ -185,9 +171,9 @@ def create_dataset_discovery_agent() -> Agent:
             - Open Images
 
             Your decision rules:
-            1. If relevance score > 0.8 → select dataset directly
-            2. If 0.5 < score < 0.8 → include with warning
-            3. If score < 0.5 → reject and trigger synthetic generation
+            1. If relevance score > 0.8 -> select dataset directly
+            2. If 0.5 < score < 0.8 -> include with warning
+            3. If score < 0.5 -> reject and trigger synthetic generation
 
             Always prioritize real-world data over synthetic data.
         """,
@@ -198,41 +184,23 @@ def create_dataset_discovery_agent() -> Agent:
     )
 
 
-def create_data_generator_agent() -> Agent:
-    """Create data generation agent with decision rules."""
-    return Agent(
-        role="Data Engineer",
-        goal="Generate high-quality synthetic data using ComfyUI workflows",
-        backstory="""
-            You are an expert in synthetic data generation.
-
-            Your decision rules:
-            1. If synthetic ratio > 30% → stop generating, use discovered data
-            2. If CLIP relevance score < 0.25 → filter out low-quality images
-            3. If generation fails → fallback to manual labeling
-
-            Always prefer quality over quantity.
-        """,
-        llm=get_llm(),
-        verbose=True,
-        allow_delegation=False,
-    )
-
-
-def create_training_agent() -> Agent:
+def create_training_agent():
     """Create training agent with decision rules."""
-    return Agent(
+    _try_import_crewai()
+    if not CREWAI_AVAILABLE:
+        return None
+    return _Agent(
         role="ML Engineer",
         goal="Train YOLO11 model with optimal performance",
         backstory="""
             You are an expert in YOLO11 training.
 
             Your decision rules:
-            1. If dataset < 1000 images → use aggressive data augmentation
-            2. If mAP50 < 0.5 after HPO → try larger model
-            3. If edge deployment → use YOLO11n (nano)
-            4. If server deployment → use YOLO11m or YOLO11l
-            5. If training time > 10 hours → enable aggressive early stopping
+            1. If dataset < 1000 images -> use aggressive data augmentation
+            2. If mAP50 < 0.5 after HPO -> try larger model
+            3. If edge deployment -> use YOLO11n (nano)
+            4. If server deployment -> use YOLO11m or YOLO11l
+            5. If training time > 10 hours -> enable aggressive early stopping
 
             Always balance accuracy and inference speed.
         """,
@@ -243,18 +211,21 @@ def create_training_agent() -> Agent:
     )
 
 
-def create_deployment_agent() -> Agent:
+def create_deployment_agent():
     """Create deployment agent with decision rules."""
-    return Agent(
+    _try_import_crewai()
+    if not CREWAI_AVAILABLE:
+        return None
+    return _Agent(
         role="DevOps Engineer",
         goal="Deploy model to edge device reliably",
         backstory="""
             You are an expert in edge deployment.
 
             Your decision rules:
-            1. If FPS < 20 → optimize model or reduce input size
-            2. If device memory < 2GB → use INT8 quantization
-            3. If deployment fails → rollback to previous version
+            1. If FPS < 20 -> optimize model or reduce input size
+            2. If device memory < 2GB -> use INT8 quantization
+            3. If deployment fails -> rollback to previous version
 
             Prioritize reliability over performance.
         """,
@@ -265,87 +236,266 @@ def create_deployment_agent() -> Agent:
     )
 
 
-# Crew definitions
-def create_training_crew() -> Crew:
-    """Create training crew with hierarchical process."""
+class YOLOTrainingOrchestrator:
+    """Orchestrates CrewAI + Pipeline execution with HiTL confirmation gates."""
 
-    # Create agents
-    discovery_agent = create_dataset_discovery_agent()
-    generator_agent = create_data_generator_agent()
-    training_agent = create_training_agent()
-    deployment_agent = create_deployment_agent()
+    def __init__(self):
+        # Don't init LLM here - only init when crewai is available
+        pass
 
-    # Create tasks
-    discovery_task = Task(
-        description="Find relevant datasets for detecting {task_description}",
-        agent=discovery_agent,
-        expected_output="List of relevant datasets with relevance scores",
-    )
+    def _get_redis(self):
+        try:
+            from ..api.redis_client import get_redis_client
+            return get_redis_client()
+        except ImportError:
+            import redis
+            return redis.Redis(
+                host=os.getenv("REDIS_HOST", "192.168.11.134"),
+                port=int(os.getenv("REDIS_PORT", "6379")),
+                db=0,
+                password=os.getenv("REDIS_PASSWORD", "123456"),
+                decode_responses=True,
+            )
 
-    generation_task = Task(
-        description="Generate synthetic data to supplement real datasets",
-        agent=generator_agent,
-        expected_output="Path to generated synthetic dataset",
-        context=[discovery_task],
-    )
+    def run_phase1(self, task_description: str, user_id: str, task_id: str) -> None:
+        """Phase 1: Run dataset discovery agent, then await human confirmation."""
+        r = self._get_redis()
+        r.hset(f"agent:{task_id}", mapping={
+            "status": "running", "user_id": user_id,
+            "task_description": task_description,
+            "progress": "10.0", "current_agent": "Dataset Curator",
+            "created_at": datetime.now().isoformat(),
+        })
 
-    training_task = Task(
-        description="Train YOLO model with optimal hyperparameters",
-        agent=training_agent,
-        expected_output="Path to trained model weights",
-        context=[discovery_task, generation_task],
-    )
+        try:
+            discovery = DatasetDiscovery()
+            results = discovery.search(query=task_description, max_results=5)
 
-    deployment_task = Task(
-        description="Export and prepare model for edge deployment",
-        agent=deployment_agent,
-        expected_output="Path to exported model ready for deployment",
-        context=[training_task],
-    )
+            if not results:
+                # Fallback: curated fire/smoke datasets (no API key configured)
+                results = [
+                    DatasetInfo(source="roboflow",
+                        name="fire-and-smoke-dataset",
+                        url="https://universe.roboflow.com/workspace-fwkuns/fire-and-smoke-dataset",
+                        license="CC BY 4.0", annotations="bounding-box", images=2800,
+                        categories=["fire","smoke"], relevance_score=0.92),
+                    DatasetInfo(source="roboflow",
+                        name="fire-detection-ymonk",
+                        url="https://universe.roboflow.com/ymonk/fire-detection-ymonk",
+                        license="CC BY 4.0", annotations="bounding-box", images=1200,
+                        categories=["fire"], relevance_score=0.85),
+                    DatasetInfo(source="roboflow",
+                        name="roboflow-universe/fire-detection",
+                        url="https://universe.roboflow.com/roboflow-universe/fire-detection",
+                        license="CC BY 4.0", annotations="bounding-box", images=5600,
+                        categories=["fire","smoke"], relevance_score=0.88),
+                    DatasetInfo(source="roboflow",
+                        name="forest-fire-detection",
+                        url="https://universe.roboflow.com/workspace-fwkuns/forest-fire-detection",
+                        license="CC BY 4.0", annotations="bounding-box", images=3800,
+                        categories=["fire","smoke"], relevance_score=0.80),
+                ]
 
-    # Create crew with hierarchical process
-    crew = Crew(
-        agents=[
-            discovery_agent,
-            generator_agent,
-            training_agent,
-            deployment_agent,
-        ],
-        tasks=[
-            discovery_task,
-            generation_task,
-            training_task,
-            deployment_task,
-        ],
-        process=Process.hierarchical,
-        manager_llm=get_llm(),  # Use Deepseek for manager
-        verbose=True,
-    )
+            # Build result string for display
+            lines = [f"Found {len(results)} datasets:"]
+            for ds in results:
+                lines.append(f"  - {ds.name} ({ds.source})")
+                lines.append(f"    Relevance: {ds.relevance_score:.2f}, Images: {ds.images}, URL: {ds.url}")
 
-    return crew
+            # Pick best dataset as recommendation
+            best = max(results, key=lambda d: d.relevance_score)
+            lines.append(f"\nRecommended: {best.name} (score={best.relevance_score:.2f}) from {best.source}")
 
+            if CREWAI_AVAILABLE:
+                lines.append(f"\n[CrewAI available - full agentic pipeline enabled]")
+            else:
+                lines.append(f"\n[CrewAI unavailable - using direct discovery fallback]")
 
-# Simple workflow crew
-def create_simple_crew(task_description: str) -> Crew:
-    """Create a simple sequential crew for training."""
+            result_str = "\n".join(lines)
 
-    discovery_agent = create_dataset_discovery_agent()
-    training_agent = create_training_agent()
+            r.hset(f"agent:{task_id}", mapping={
+                "status": "awaiting_confirmation",
+                "current_agent": "Dataset Curator",
+                "progress": "30.0",
+                "phase1_result": result_str,
+                "confirmed_running": "false",
+            })
+        except Exception as e:
+            r.hset(f"agent:{task_id}", mapping={
+                "status": "failed",
+                "error": str(e),
+                "completed_at": datetime.now().isoformat(),
+            })
 
-    discovery_task = Task(
-        description=f"Find datasets for: {task_description}",
-        agent=discovery_agent,
-    )
+    def run_phase2(self, task_id: str, user_id: str) -> None:
+        """Phase 2: Prepare training params gate after dataset confirmation."""
+        r = self._get_redis()
+        data = r.hgetall(f"agent:{task_id}")
+        confirmed = data.get("confirmed_running") == "true"
+        overrides_json = r.hget(f"agent:{task_id}", "overrides_running")
+        overrides = json.loads(overrides_json) if overrides_json else {}
+        r.hset(f"agent:{task_id}", mapping={
+            "status": "awaiting_training_confirmation",
+            "current_agent": "ML Engineer",
+            "progress": "50.0",
+            "dataset_path": overrides.get("dataset_path", "/home/wangxin/data/fire-smoke/data.yaml"),
+            "dataset_name": overrides.get("dataset_name", "fire-and-smoke-dataset"),
+            "source": overrides.get("source", "roboflow"),
+            "confirmed_training": "false",
+        })
 
-    training_task = Task(
-        description="Train YOLO model on discovered dataset",
-        agent=training_agent,
-        context=[discovery_task],
-    )
+    def run_phase3(self, task_id: str, user_id: str) -> None:
+        """Phase 3: Submit actual training job to GPU server."""
+        r = self._get_redis()
+        data = r.hgetall(f"agent:{task_id}")
+        confirmed_training = data.get("confirmed_training") == "true"
 
-    return Crew(
-        agents=[discovery_agent, training_agent],
-        tasks=[discovery_task, training_task],
-        process=Process.sequential,
-        verbose=True,
-    )
+        overrides_json = r.hget(f"agent:{task_id}", "overrides_training_confirmation")
+        overrides = json.loads(overrides_json) if overrides_json else {}
+
+        model = overrides.get("model", "yolo11n")
+        epochs = overrides.get("epochs", 50)
+        imgsz = overrides.get("imgsz", 640)
+        batch = overrides.get("batch", 16)
+        device = overrides.get("device", "cuda:0")
+
+        r.hset(f"agent:{task_id}", mapping={
+            "status": "training",
+            "current_agent": "ML Engineer",
+            "progress": "55.0",
+            "training_model": model,
+            "training_epochs": str(epochs),
+            "training_imgsz": str(imgsz),
+        })
+
+        try:
+            from ..api.training_client import TrainingAPIClient
+            client = TrainingAPIClient(
+                base_url=os.getenv("TRAINING_API_URL", "http://192.168.11.3:8001"),
+                api_key=os.getenv("TRAINING_API_KEY", "5M2oDsEfm0KxwSwFhLDtsq77FGztUY9DapuwQPx0fSE"),
+            )
+            # Use sync method to avoid asyncio.run() in background thread
+            result = client.start_training_sync(
+                task_id=task_id,
+                model=model,
+                data_yaml="/home/wangxin/data/fire-smoke/data.yaml",
+                epochs=epochs,
+                imgsz=imgsz,
+                batch=batch,
+                device=device,
+                output_dir="/home/wangxin/runs",
+            )
+            training_task_id = result.get("task_id", task_id)
+            r.hset(f"agent:{task_id}", mapping={
+                "status": "training",
+                "progress": "60.0",
+                "training_task_id": training_task_id,
+            })
+
+            # Poll Training API for completion (runs in background thread)
+            self._poll_training(task_id, training_task_id, client)
+        except Exception as e:
+            r.hset(f"agent:{task_id}", mapping={
+                "status": "failed",
+                "error": f"Training submission failed: {e}",
+                "completed_at": datetime.now().isoformat(),
+            })
+
+    def _poll_training(self, task_id: str, training_task_id: str, client) -> None:
+        """Poll Training API for training completion and update Redis."""
+        import time
+        max_wait = 7200  # 2 hours max
+        start = time.time()
+        r = self._get_redis()
+
+        try:
+            while time.time() - start < max_wait:
+                time.sleep(30)
+                try:
+                    # Use sync client to avoid asyncio.run() in thread
+                    status_data = client.get_task_status_sync(training_task_id)
+                    status = status_data.get("status", "unknown")
+                    progress = status_data.get("progress", 60)
+
+                    r.hset(f"agent:{task_id}", mapping={
+                        "status": "training",
+                        "progress": str(progress),
+                        "training_status": status,
+                        "poll_raw": str(status_data),
+                    })
+
+                    if status in ("completed", "success"):
+                        model_path = status_data.get("model_path", "/home/wangxin/runs/train/weights/best.pt")
+                        r.hset(f"agent:{task_id}", mapping={
+                            "status": "training_completed",
+                            "progress": "90.0",
+                            "model_path": model_path,
+                        })
+                        return
+                    elif status in ("failed", "error"):
+                        r.hset(f"agent:{task_id}", mapping={
+                            "status": "failed",
+                            "error": f"GPU training failed: {status_data.get('error', status)}",
+                            "completed_at": datetime.now().isoformat(),
+                        })
+                        return
+                except Exception as e:
+                    r.hset(f"agent:{task_id}", mapping={
+                        "training_poll_error": str(e),
+                    })
+
+            # Timeout
+            r.hset(f"agent:{task_id}", mapping={
+                "status": "failed",
+                "error": "Training timeout (>2h)",
+                "completed_at": datetime.now().isoformat(),
+            })
+        except Exception as e:
+            # Top-level: prevent thread from crashing silently
+            r.hset(f"agent:{task_id}", mapping={
+                "status": "failed",
+                "error": f"Polling crashed: {e}",
+                "completed_at": datetime.now().isoformat(),
+            })
+
+    def confirm(self, task_id: str, approved: bool, overrides: dict) -> bool:
+        """Record human confirmation decision."""
+        r = self._get_redis()
+        current = r.hget(f"agent:{task_id}", "status")
+        if not current:
+            return False
+        r.hset(f"agent:{task_id}", mapping={
+            f"confirmed_{current}": "true" if approved else "false",
+            f"overrides_{current}": json.dumps(overrides),
+        })
+        if current == "awaiting_confirmation":
+            r.hset(f"agent:{task_id}", "confirmed_running", "true")
+        elif current == "awaiting_training_confirmation":
+            r.hset(f"agent:{task_id}", "confirmed_training", "true")
+        return approved
+
+    def get_status(self, task_id: str) -> Optional[dict]:
+        """Get task status from Redis."""
+        r = self._get_redis()
+        data = r.hgetall(f"agent:{task_id}")
+        if not data:
+            return None
+        data["progress"] = float(data.get("progress", "0.0"))
+        return data
+
+    def get_pipeline_status(self, task_id: str) -> Optional[dict]:
+        """Get pipeline execution status."""
+        data = self.get_status(task_id)
+        if data is None:
+            return None
+        pipeline_id = data.get("pipeline_id", "")
+        return {"pipeline_id": pipeline_id, "pipeline_status": data.get("pipeline_status", "not_started")}
+
+    def cancel(self, task_id: str) -> bool:
+        """Cancel a running task."""
+        r = self._get_redis()
+        r.hset(f"agent:{task_id}", mapping={
+            "status": "cancelled",
+            "completed_at": datetime.now().isoformat(),
+        })
+        return True

@@ -15,7 +15,7 @@ from dataclasses import dataclass
 
 from ultralytics import YOLO
 
-from training_api.src.deployment.validator import ModelValidator
+from src.deployment.validator import ModelValidator
 
 # Lazy imports for optional dependencies
 _paramiko = None
@@ -81,14 +81,14 @@ class ModelExporter:
             "format": "onnx",
             "half": False,
             "dynamic": False,
-            "simplify": True,
+            "simplify": False,  # False to avoid ultralytics auto-update using system pip
             "opset": 13,
         },
         "onnx_fp16": {
             "format": "onnx",
             "half": True,
             "dynamic": False,
-            "simplify": True,
+            "simplify": False,
             "opset": 13,
         },
         "cpu": {
@@ -135,8 +135,15 @@ class ModelExporter:
 
             if "opset" in config:
                 export_kwargs["opset"] = config["opset"]
-            if "simplify" in config:
-                export_kwargs["simplify"] = config["simplify"]
+            if "simplify" in config and config["simplify"]:
+                # Only enable simplify if onnxsim is available (graceful fallback)
+                try:
+                    import onnxsim
+                    export_kwargs["simplify"] = True
+                    logging.info("[ModelExporter] onnxsim available, enabling simplify")
+                except ImportError:
+                    logging.warning("[ModelExporter] onnxsim not installed, skipping simplify (install with: pip install onnxsim)")
+                    export_kwargs["simplify"] = False
             if "workspace" in config:
                 export_kwargs["workspace"] = config["workspace"]
             if "int8" in config and config["int8"]:

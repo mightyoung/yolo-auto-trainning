@@ -7,7 +7,7 @@ Based on Ultralytics official best practices:
 """
 
 from pathlib import Path
-from typing import Dict, Any, Optional, Tuple
+from typing import Dict, Any, Optional, Tuple, Callable
 from dataclasses import dataclass
 from datetime import datetime
 import json
@@ -16,7 +16,10 @@ import logging
 import torch
 from ultralytics import YOLO
 
-from src.training.mlflow_tracker import MLflowTracker
+try:
+    from src.training.mlflow_tracker import MLflowTracker
+except ImportError:
+    MLflowTracker = None  # type: ignore
 
 from .config import (
     TrainingConfig,
@@ -28,6 +31,11 @@ from .config import (
     DEFAULT_HPO_CONFIG,
     DEFAULT_EXPORT_CONFIG,
 )
+
+
+class TrainingCancelled(Exception):
+    """Raised when training is cancelled via the progress callback."""
+    pass
 
 
 @dataclass
@@ -122,6 +130,7 @@ class YOLOTrainer:
         data_yaml: Path,
         epochs: int = None,
         config: TrainingConfig = None,
+        progress_callback: Optional[Callable[[int, int], None]] = None,
     ) -> TrainingResult:
         """
         Train YOLO model with given configuration.
@@ -130,6 +139,8 @@ class YOLOTrainer:
             data_yaml: Path to dataset YAML
             epochs: Number of epochs
             config: Training configuration
+            progress_callback: Optional callable(epoch, total_epochs) called each epoch end.
+                               If the callback raises TrainingCancelled, training is aborted.
 
         Returns:
             TrainingResult with trained model
@@ -171,15 +182,26 @@ class YOLOTrainer:
 
         model = YOLO(f"{self.model_name}.pt")
 
+        # Register progress callback using ultralytics callback system
+        if progress_callback:
+            def _on_epoch_end(trainer):
+                current_epoch = trainer.epoch
+                total_epochs = trainer.epochs
+                try:
+                    progress_callback(current_epoch, total_epochs)
+                except Exception as e:
+                    # Re-raise cancellation signals
+                    if "cancel" in str(e).lower():
+                        raise
+            model.add_callback("on_train_epoch_end", _on_epoch_end)
+
         try:
             results = model.train(
                 data=str(data_yaml),
-                epochs=epochs,
-                imgsz=config.imgsz,
-                batch=config.batch,
                 project=str(self.output_dir),
                 name="train",
                 exist_ok=True,
+                device=config.device,
                 **config.to_dict(),
             )
 
@@ -214,6 +236,17 @@ class YOLOTrainer:
                     "mAP50": results.results_dict.get("metrics/mAP50(B)", 0),
                     "mAP50-95": results.results_dict.get("metrics/mAP50-95(B)", 0),
                 },
+            )
+        except TrainingCancelled:
+            # End MLflow run with finished status (cancelled is not a failure)
+            if tracker and mlflow_enabled:
+                try:
+                    tracker.end_run(status="FINISHED")
+                except Exception:
+                    pass
+            return TrainingResult(
+                status="cancelled",
+                error="Training was cancelled",
             )
         except Exception as e:
             # End MLflow run with failed status
