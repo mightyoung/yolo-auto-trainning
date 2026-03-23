@@ -179,7 +179,8 @@ from .routes import (
     train_router,
     deploy_router,
     callback_router,
-    analysis_router
+    analysis_router,
+    queue_router,
 )
 from .agent_routes import agent_router
 
@@ -190,6 +191,7 @@ app.include_router(deploy_router, prefix="/api/v1/deploy", tags=["Deployment"])
 app.include_router(callback_router, prefix="/api/v1/callback", tags=["Callback"])
 app.include_router(agent_router, prefix="/api/v1/agent", tags=["Agent"])
 app.include_router(analysis_router, prefix="/api/v1/analysis", tags=["Analysis"])
+app.include_router(queue_router, prefix="/api/v1/queue", tags=["Queue"])
 
 
 @app.get("/health")

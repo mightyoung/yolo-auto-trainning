@@ -1,4 +1,30 @@
 """
+[DEPRECATED] Legacy orchestration module.
+
+This file is DEPRECATED. All active functionality has been moved to:
+    business-api/src/agents/orchestration.py
+
+The business-api version is the canonical implementation with:
+- Lazy crewai imports (graceful degradation)
+- Real TrainingAPIClient integration
+- Proper HiTL 3-phase workflow
+
+This file is kept for backwards compatibility only.
+DO NOT add new functionality here.
+
+Migration: Update imports from src.agents.orchestration -> business_api.src.agents.orchestration
+"""
+
+import warnings
+warnings.warn(
+    "src.agents.orchestration is deprecated. "
+    "Use business_api.src.agents.orchestration instead. "
+    "This module will be removed in a future release.",
+    DeprecationWarning,
+    stacklevel=2
+)
+
+"""
 CrewAI Agents - Multi-agent orchestration for YOLO training system.
 
 Based on CrewAI best practices:

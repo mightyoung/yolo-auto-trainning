@@ -34,6 +34,10 @@ class AgentTaskRequest(BaseModel):
         None,
         description="Specific agents to use"
     )
+    auto_confirm: bool = Field(
+        False,
+        description="If true, bypasses HiTL human confirmation gates for fully autonomous training"
+    )
 
 
 class AgentTaskResponse(BaseModel):
@@ -113,12 +117,14 @@ async def submit_agent_task(
 
         # Initialize Redis state
         r = orchestrator._get_redis()
+        # Store auto_confirm flag in Redis so background phase can read it
         r.hset(f"agent:{task_id}", mapping={
             "status": "submitted",
             "user_id": current_user.user_id,
             "task_description": request.task,
             "progress": "0.0",
             "created_at": datetime.now().isoformat(),
+            "auto_confirm": "true" if request.auto_confirm else "false",
         })
 
         # Kick off Phase 1 in background
@@ -209,7 +215,17 @@ async def confirm_task(
     if data.get("user_id") and data["user_id"] != current_user.user_id:
         raise HTTPException(status_code=403, detail="Not your task")
 
-    success = orchestrator.confirm(task_id, request.approved, request.overrides or {})
+    # Auto-inject source into overrides when user approves without providing it.
+    # This ensures coco_builtin source is passed through to Phase 2.
+    overrides = request.overrides or {}
+    if not overrides.get("source"):
+        phase1_result = data.get("phase1_result", "")
+        if "coco_builtin" in phase1_result or "COCO-Person" in phase1_result:
+            overrides["source"] = "coco_builtin"
+            overrides["dataset_name"] = overrides.get("dataset_name", "COCO-Person-BuiltIn")
+            overrides["dataset_path"] = overrides.get("dataset_path", "/home/wangxin/data/coco_person")
+
+    success = orchestrator.confirm(task_id, request.approved, overrides)
 
     # If approved and was waiting for confirmation, chain to next phase
     if success and data.get("status") == "awaiting_confirmation":

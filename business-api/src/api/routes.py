@@ -146,6 +146,18 @@ class TrainRequest(BaseModel):
     project: str = "/models/auto-detect"
 
 
+class AdjustRequest(BaseModel):
+    """Request to adjust training parameters mid-run (plateau-breaking)."""
+    # New learning rate (if None, use current lr * factor)
+    lr0: Optional[float] = Field(None, description="New initial learning rate")
+    # Augmentation overrides
+    augmentation_preset: Optional[str] = Field(None, description="Augmentation preset: balanced|strong")
+    # Resume from best.pt of previous run (continuation training)
+    resume_from: Optional[str] = Field(None, description="Path to best.pt from previous run")
+    # Additional epochs beyond what was already trained
+    additional_epochs: int = Field(0, description="Extra epochs to add to original schedule")
+
+
 class TrainResponse(BaseModel):
     """Training response."""
     task_id: str
@@ -164,6 +176,15 @@ class TrainStatusResponse(BaseModel):
     total_epochs: Optional[int] = None
     metrics: Optional[dict] = None
     error: Optional[str] = None
+    # Plateau detection fields
+    live_mAP50: Optional[float] = None
+    lr_decay_triggered: Optional[bool] = None
+    lr_decay_signal: Optional[dict] = None
+    augment_boost_active: Optional[bool] = None
+    augment_boost_signal: Optional[dict] = None
+    data_expansion_requested: Optional[bool] = None
+    data_expansion_signal: Optional[dict] = None
+    strategies_triggered: Optional[list] = None
 
 
 class ExportRequest(BaseModel):
@@ -217,6 +238,15 @@ class TaskListResponse(BaseModel):
     total: int
 
 
+class QueueTaskRequest(BaseModel):
+    """GPU task queue request."""
+    data_yaml: str = Field(..., description="Path to dataset YAML")
+    output_dir: Optional[str] = Field("/home/wangxin/runs", description="Output directory")
+    device: str = Field("cuda:0", description="CUDA device")
+    epochs_per_stage: int = Field(100, description="Epochs per curriculum stage")
+    model: Optional[str] = Field(None, description="Model override")
+
+
 class TaskDetailResponse(BaseModel):
     """Task detail response."""
     task_id: str
@@ -236,6 +266,7 @@ train_router = APIRouter()
 deploy_router = APIRouter()
 callback_router = APIRouter()
 analysis_router = APIRouter()
+queue_router = APIRouter()
 
 
 # ==================== Task Callback Endpoints ====================
@@ -471,7 +502,15 @@ async def get_training_status(
             current_epoch=result.get("current_epoch"),
             total_epochs=result.get("total_epochs"),
             metrics=result.get("metrics"),
-            error=result.get("error")
+            error=result.get("error"),
+            live_mAP50=result.get("live_mAP50"),
+            lr_decay_triggered=result.get("lr_decay_triggered"),
+            lr_decay_signal=result.get("lr_decay_signal"),
+            augment_boost_active=result.get("augment_boost_active"),
+            augment_boost_signal=result.get("augment_boost_signal"),
+            data_expansion_requested=result.get("data_expansion_requested"),
+            data_expansion_signal=result.get("data_expansion_signal"),
+            strategies_triggered=result.get("strategies_triggered"),
         )
 
     except Exception as e:
@@ -528,6 +567,144 @@ async def cancel_training(
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
             detail=f"Failed to cancel training job: {str(e)}"
+        )
+
+
+@train_router.post("/adjust/{task_id}")
+async def adjust_training(
+    task_id: str,
+    request: AdjustRequest,
+    http_request: Request,
+    current_user: CurrentUser = Depends(get_current_user),
+    _: None = Depends(check_rate_limit)
+):
+    """
+    Adjust training parameters mid-run to break plateau.
+
+    This endpoint is called when the DynamicTrainingManager detects that training
+    has plateaued. It cancels the current run and restarts with adjusted parameters:
+    - Reduced learning rate (lr_decay_triggered)
+    - Boosted augmentation (augment_boost_active)
+    - Expanded dataset (data_expansion_requested)
+
+    Requires authentication. Verifies task ownership.
+    """
+    try:
+        # Verify task ownership
+        redis_client = get_redis_client(http_request)
+        task = verify_task_ownership(redis_client, task_id, current_user.user_id)
+        if task is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Task not found or not authorized"
+            )
+
+        client = http_request.app.state.training_client
+
+        # Get current task params from Redis
+        params = task.get("params", {})
+        model = params.get("model", "yolo11m")
+        data_yaml = params.get("data_yaml", "")
+        original_epochs = params.get("epochs", 100)
+        imgsz = params.get("imgsz", 640)
+        device = params.get("device", "cuda:0")
+
+        # Cancel current training
+        try:
+            await client.cancel_task(task_id)
+        except Exception:
+            pass  # May already be stopped
+
+        # Determine new lr0
+        new_lr0 = request.lr0
+        if new_lr0 is None and request.resume_from:
+            # Default: halve the LR when resuming from best.pt
+            new_lr0 = 0.005  # Half of default 0.01
+
+        # Determine augmentation preset
+        augmentation_preset = request.augmentation_preset
+        if augmentation_preset is None and request.additional_epochs > 0:
+            augmentation_preset = "strong"  # Auto-upgrade to strong when extending
+
+        # New total epochs = original + additional
+        new_epochs = original_epochs + request.additional_epochs
+
+        # Generate new task_id for the adjusted run
+        new_task_id = f"train_{uuid.uuid4().hex[:8]}"
+
+        # Submit new training task
+        result = await client.start_training(
+            task_id=new_task_id,
+            model=model,
+            data_yaml=data_yaml,
+            epochs=new_epochs,
+            imgsz=imgsz,
+            output_dir=f"/home/wangxin/runs/{new_task_id}",
+            batch=16,
+            device=device,
+            augmentation_preset=augmentation_preset,
+            resume_from=request.resume_from,
+        )
+
+        # Store new task in Redis
+        task_data = {
+            "task_id": new_task_id,
+            "task_type": "training",
+            "user_id": current_user.user_id,
+            "status": "submitted",
+            "created_at": datetime.now().isoformat(),
+            "params": {
+                "model": model,
+                "data_yaml": data_yaml,
+                "epochs": new_epochs,
+                "imgsz": imgsz,
+                "adjusted_from": task_id,  # Link to original task
+                "lr0": new_lr0,
+                "augmentation_preset": augmentation_preset,
+                "resume_from": request.resume_from,
+            }
+        }
+        store_task_in_redis(redis_client, task_data)
+
+        # Update original task status
+        redis_client.hset(f"task:{current_user.user_id}:{task_id}", mapping={
+            "status": "adjusted",
+            "adjusted_to": new_task_id,
+            "adjusted_at": datetime.now().isoformat(),
+        })
+
+        # Log adjustment
+        audit_logger.log_training(
+            user_id=current_user.user_id,
+            action="adjust",
+            task_id=new_task_id,
+            request=http_request,
+            details={
+                "original_task": task_id,
+                "lr0": new_lr0,
+                "augmentation": augmentation_preset,
+                "resume_from": request.resume_from,
+                "new_epochs": new_epochs,
+            }
+        )
+
+        return {
+            "task_id": new_task_id,
+            "status": "submitted",
+            "message": (
+                f"Training adjusted and restarted. New lr0={new_lr0}, "
+                f"augmentation={augmentation_preset}, epochs={new_epochs}"
+            ),
+            "original_task_id": task_id,
+            "gpu_server": "http://192.168.11.3:8001",
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=f"Failed to adjust training: {str(e)}"
         )
 
 
@@ -1030,6 +1207,70 @@ async def generate_report(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Report generation failed: {str(e)}"
         )
+
+
+# ==================== GPU Queue Endpoints ====================
+
+@queue_router.post("/enqueue")
+async def enqueue_training(
+    request: QueueTaskRequest,
+    http_request: Request,
+    current_user: CurrentUser = Depends(get_current_user),
+    _: None = Depends(check_rate_limit)
+):
+    """
+    Enqueue a training task for autonomous GPU scheduling.
+
+    If a GPU is free, the task will be dispatched immediately.
+    Otherwise, it is queued and dispatched when a GPU becomes available.
+
+    Requires authentication.
+    """
+    import uuid
+    from .gpu_scheduler import enqueue_task as _enqueue_task
+
+    task_metadata = {
+        "task_id": f"queue_{uuid.uuid4().hex[:8]}",
+        "user_id": current_user.user_id,
+        "data_yaml": request.data_yaml,
+        "output_dir": request.output_dir,
+        "device": request.device,
+        "epochs_per_stage": request.epochs_per_stage,
+    }
+    if request.model:
+        task_metadata["model"] = request.model
+
+    queue_len = _enqueue_task(task_metadata)
+
+    return {
+        "status": "queued",
+        "task_id": task_metadata["task_id"],
+        "queue_length": queue_len,
+        "message": "Task added to GPU queue and will dispatch when a GPU is free"
+    }
+
+
+@queue_router.get("/status")
+async def get_queue_status(
+    http_request: Request,
+    current_user: CurrentUser = Depends(get_current_user),
+    _: None = Depends(check_rate_limit)
+):
+    """
+    View all queued tasks without removing them.
+
+    Requires authentication.
+    """
+    from .gpu_scheduler import peek_queue as _peek_queue
+
+    tasks = _peek_queue()
+    # Filter to only show tasks for the current user (plus any admin view)
+    visible_tasks = [t for t in tasks if t.get("user_id") == current_user.user_id]
+
+    return {
+        "queue_length": len(tasks),
+        "tasks": visible_tasks,
+    }
 
 
 # ==================== Auth ====================
