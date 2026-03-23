@@ -48,9 +48,10 @@ if free: print("Port 8001 is free")
 print("\n=== Upload all files ===")
 files = [
     # Training API files (on GPU at /home/wangxin/yolo-auto-training/training-api/)
-    (r'E:\yolo-auto-training\startup_gpu.py', '/home/wangxin/yolo-auto-training/training-api/startup.py'),
-    (r'E:\yolo-auto-training\src\training\runner.py', '/home/wangxin/yolo-auto-training/training-api/src/training/runner.py'),
-    (r'E:\yolo-auto-training\src\training\config.py', '/home/wangxin/yolo-auto-training/training-api/src/training/config.py'),
+    (r'E:\yolo-auto-training\startup_gpu.py', '/home/wangxin/yolo-auto-training/startup_gpu.py'),
+    (r'E:\yolo-auto-training\training-api\.env', '/home/wangxin/yolo-auto-training/.env'),
+    (r'E:\yolo-auto-training\training-api\src\training\runner.py', '/home/wangxin/yolo-auto-training/training-api/src/training/runner.py'),
+    (r'E:\yolo-auto-training\training-api\src\training\config.py', '/home/wangxin/yolo-auto-training/training-api/src/training/config.py'),
     (r'E:\yolo-auto-training\training-api\src\api\routes.py', '/home/wangxin/yolo-auto-training/training-api/src/api/routes.py'),
     (r'E:\yolo-auto-training\training-api\src\api\gateway.py', '/home/wangxin/yolo-auto-training/training-api/src/api/gateway.py'),
     (r'E:\yolo-auto-training\training-api\src\training\__init__.py', '/home/wangxin/yolo-auto-training/training-api/src/training/__init__.py'),
@@ -79,22 +80,14 @@ out,_=run_cmd(client, '/home/wangxin/yolo-auto-training/training-venv/bin/python
 print(out.strip())
 
 # === Start Training API (background) ===
-print("\n=== Starting Training API ===")
-VENV = '/home/wangxin/yolo-auto-training/training-venv/bin/python'
-startup = (
-    "cd /home/wangxin/yolo-auto-training && "
-    "CUDA_VISIBLE_DEVICES=1 "
-    "PYTHONPATH=/home/wangxin/yolo-auto-training/training-api/src "
-    "JWT_SECRET_KEY=yolo-training-secret-key-2024 "
-    "INTERNAL_API_KEY=5M2oDsEfm0KxwSwFhLDtsq77FGztUY9DapuwQPx0fSE "
-    "nohup "
-    + VENV + " -m uvicorn training-api.src.api.gateway:app "
-    "--host 0.0.0.0 --port 8001 "
-    "> /tmp/training-api.log 2>&1 &"
+print(f"\n=== Starting Training API ===")
+# startup_gpu.py handles .env loading, CUDA device, and cwd internally
+client.exec_command(
+    'cd /home/wangxin/yolo-auto-training && '
+    '/home/wangxin/yolo-auto-training/training-venv/bin/python startup_gpu.py '
+    '>> /tmp/training-api.log 2>&1 &'
 )
-client.exec_command(startup)
 print("  Startup command sent")
-print("Start command sent")
 time.sleep(8)
 
 # === Health check ===

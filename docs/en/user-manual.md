@@ -68,11 +68,11 @@ JWT_SECRET_KEY=your_secret_key
 # Start Redis
 redis-server
 
-# Start API server
-uvicorn src.api.gateway:app --host 0.0.0.0 --port 8000
+# Start Business API (port 8000)
+uvicorn business-api.src.api.gateway:app --host 0.0.0.0 --port 8000
 
-# Start Celery worker (separate terminal)
-celery -A src.api.tasks worker --loglevel=info
+# Start Training API (port 8001) - on GPU server
+uvicorn training-api.src.api.gateway:app --host 0.0.0.0 --port 8001
 ```
 
 ---

@@ -4,8 +4,8 @@
 本文档说明如何在GPU服务器上部署YOLO自动训练系统。
 
 ## 前提条件
-- NVIDIA GPU (支持CUDA 12.1)
-- Docker + nvidia-docker2
+- NVIDIA GPU (支持CUDA 11.8)
+- Docker + nvidia-docker (支持 CUDA 11.8)
 - NVIDIA驱动
 
 ## 部署步骤

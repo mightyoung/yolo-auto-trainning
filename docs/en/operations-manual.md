@@ -10,24 +10,23 @@
 ### 1.1 Overview
 
 ```
-+-----------------------------------------------------------------+
-|                        FastAPI Gateway                          |
-|                    (Port 8000, Health Check)                  |
-+----------------------------+----------------------------------+
-                             |
-        +----------------------+----------------------+
-        |                      |                      |
-        v                      v                      v
-+---------------+    +---------------+    +---------------+
-| Data Service |    |Train Service |    |Deploy Service |
-| /api/v1/data|    |/api/v1/train|    |/api/v1/deploy|
-+-------+------+    +-------+------+    +-------+------+
-        |                      |                      |
-        +----------------------+----------------------+
-                             |
-                             v
-                    +---------------------+
-                    |    Celery Task     |
++------------------------------------------------------------------+
+|                  Business API (Port 8000)                       |
+|       Auth │ Dataset Discovery │ CrewAI Agents │ Task Sched.     |
++---------------------------+--------------------------------------+
+                            | Internal HTTP
++---------------------------v--------------------------------------+
+|                  Training API (Port 8001)                         |
+|        YOLO Training │ HPO │ Model Export │ Plateau Detection     |
++---------------------------+--------------------------------------+
+                            |
+         +------------------+-------------------+
+         |                  |                   |
+         v                  v                   v
++---------------+  +---------------+  +------------------+
+|  GPU Server   |  |   Redis 7     |  |    MLflow        |
+| (CUDA 11.8)  |  |  (Task Queue) |  | (Experiment Trk) |
++---------------+  +---------------+  +------------------+     |
                     |       Queue        |
                     +---------+----------+
                              |
@@ -78,11 +77,11 @@ pip install -r requirements.txt
 # Start Redis
 redis-server
 
-# Start API (Terminal 1)
-uvicorn src.api.gateway:app --host 0.0.0.0 --port 8000
+# Start Business API (Terminal 1) - Auth, Dataset Discovery, CrewAI Agents
+uvicorn business-api.src.api.gateway:app --host 0.0.0.0 --port 8000
 
-# Start Celery worker (Terminal 2)
-celery -A src.api.tasks worker --loglevel=info --concurrency=2
+# Start Training API (Terminal 2) - GPU Training, HPO, Model Export
+uvicorn training-api.src.api.gateway:app --host 0.0.0.0 --port 8001
 
 # Start Celery beat (Terminal 3)
 celery -A src.api.tasks beat --loglevel=info

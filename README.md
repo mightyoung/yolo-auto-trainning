@@ -44,7 +44,7 @@ An AI-driven end-to-end YOLO model training and deployment platform. From datase
            │
     ┌──────▼──────┐     ┌─────────────┐     ┌─────────────┐
     │  GPU Server  │     │ Redis 7     │     │ MLflow      │
-    │  (CUDA 12.1)│     │ (Broker)    │     │ (Tracking)  │
+    │  (CUDA 11.8)│     │ (Broker)    │     │ (Tracking)  │
     └─────────────┘     └─────────────┘     └─────────────┘
 ```
 
@@ -56,7 +56,7 @@ An AI-driven end-to-end YOLO model training and deployment platform. From datase
 
 - Python 3.10+
 - Docker & Docker Compose
-- (GPU training) NVIDIA GPU with CUDA 12.1 support
+- (GPU training) NVIDIA GPU with CUDA 11.8 support
 
 ### 1. Clone & Configure
 

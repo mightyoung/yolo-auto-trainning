@@ -68,11 +68,11 @@ JWT_SECRET_KEY=your_secret_key
 # 启动 Redis
 redis-server
 
-# 启动 API 服务器
-uvicorn src.api.gateway:app --host 0.0.0.0 --port 8000
+# 启动 Business API（端口 8000）
+uvicorn business-api.src.api.gateway:app --host 0.0.0.0 --port 8000
 
-# 启动 Celery worker（独立终端）
-celery -A src.api.tasks worker --loglevel=info
+# 启动 Training API（端口 8001）- 在 GPU 服务器上运行
+uvicorn training-api.src.api.gateway:app --host 0.0.0.0 --port 8001
 ```
 
 ---

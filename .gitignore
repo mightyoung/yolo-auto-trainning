@@ -8,6 +8,31 @@
 .env.local
 .env.*.local
 .env.example        # Keep .env.example as a template
+business-api/.env
+business-api/.env.*
+training-api/.env
+training-api/.env.*
+web-ui-react/.env
+web-ui-react/.env.*
+
+# Auth artifacts — never commit tokens or session data
+.token.txt
+*.token
+login_result.txt
+login_test*.txt
+biz_startup*.txt
+biz_server*.log
+e2e_test.log
+task_submit_log.txt
+training_api_check.txt
+training_errors.txt
+health_test.txt
+wget_result.txt
+server_ps*.txt
+biz_server*.log
+
+# Test reports may contain credentials from test runs
+test_reports/
 
 # Colab secrets (local API keys - never commit)
 colab/secrets.env
