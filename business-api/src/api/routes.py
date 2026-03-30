@@ -315,6 +315,14 @@ async def _attach_execution_snapshot(task: dict, training_client) -> dict:
     return task
 
 
+async def _get_aggregated_task(redis_client, training_client, task_id: str, user_id: str) -> Optional[dict]:
+    """Load a task registry record and enrich it with execution state."""
+    task = verify_task_ownership(redis_client, task_id, user_id)
+    if task is None:
+        return None
+    return await _attach_execution_snapshot(task, training_client)
+
+
 class QueueTaskRequest(BaseModel):
     """GPU task queue request."""
     data_yaml: str = Field(..., description="Path to dataset YAML")
@@ -550,19 +558,14 @@ async def get_training_status(
     Requires authentication. Verifies task ownership.
     """
     try:
-        # Verify task ownership
         redis_client = get_redis_client(http_request)
-        task = verify_task_ownership(redis_client, task_id, current_user.user_id)
+        client = http_request.app.state.training_client
+        task = await _get_aggregated_task(redis_client, client, task_id, current_user.user_id)
         if task is None:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail="Task not found or not authorized"
             )
-
-        # Use training client from app state (initialized in gateway.py)
-        client = http_request.app.state.training_client
-
-        result = await client.get_task_status(task_id)
 
         # Log status check
         audit_logger.log_training(
@@ -570,12 +573,13 @@ async def get_training_status(
             action="status_check",
             task_id=task_id,
             request=http_request,
-            details={"status": result.get("status")}
+            details={"status": task.get("status")}
         )
 
+        result = task.get("execution", {})
         return TrainStatusResponse(
-            task_id=result.get("task_id", task_id),
-            status=result.get("status", "unknown"),
+            task_id=task.get("task_id", task_id),
+            status=task.get("status", task.get("registry_status", "unknown")),
             progress=result.get("progress", 0.0),
             current_epoch=result.get("current_epoch"),
             total_epochs=result.get("total_epochs"),
@@ -1094,21 +1098,15 @@ async def get_export_status(
     Requires authentication. Verifies task ownership.
     """
     try:
-        # Verify task ownership
         redis_client = get_redis_client(http_request)
-        task = verify_task_ownership(redis_client, task_id, current_user.user_id)
+        client = http_request.app.state.training_client
+        task = await _get_aggregated_task(redis_client, client, task_id, current_user.user_id)
         if task is None:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail="Task not found or not authorized"
             )
-
-        # Use training client from app state (initialized in gateway.py)
-        client = http_request.app.state.training_client
-
-        result = await client.get_task_status(task_id)
-
-        return result
+        return task.get("execution", task)
 
     except HTTPException:
         raise
