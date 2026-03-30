@@ -34,8 +34,6 @@ API_KEY_HEADER = "X-API-Key"
 
 # JWT settings
 JWT_SECRET_KEY = os.getenv("JWT_SECRET_KEY")
-if not JWT_SECRET_KEY:
-    raise ValueError("JWT_SECRET_KEY environment variable must be set")
 JWT_ALGORITHM = "HS256"
 
 # Redis settings
@@ -44,8 +42,19 @@ REDIS_PASSWORD = os.getenv("REDIS_PASSWORD")
 
 # Internal API Key - must be set in environment
 INTERNAL_API_KEY = os.getenv("INTERNAL_API_KEY")
-if not INTERNAL_API_KEY:
-    raise ValueError("INTERNAL_API_KEY environment variable must be set")
+
+
+def _validate_startup_config():
+    """Validate required configuration when the app actually starts."""
+    missing = []
+    if not JWT_SECRET_KEY:
+        missing.append("JWT_SECRET_KEY")
+    if not INTERNAL_API_KEY:
+        missing.append("INTERNAL_API_KEY")
+    if missing:
+        raise RuntimeError(
+            "Missing required training API configuration: " + ", ".join(missing)
+        )
 
 
 def get_redis_client():
@@ -61,7 +70,7 @@ def get_redis_client():
 
 def verify_internal_api_key(api_key: str = None):
     """Verify internal API key using constant-time comparison to prevent timing attacks."""
-    if api_key is None:
+    if api_key is None or not INTERNAL_API_KEY:
         return False
     # Use constant-time comparison to prevent timing attacks
     return secrets.compare_digest(api_key, INTERNAL_API_KEY)
@@ -168,6 +177,7 @@ async def check_rate_limit(
 async def lifespan(app: FastAPI):
     """Application lifespan events."""
     # Startup
+    _validate_startup_config()
     app.state.redis = get_redis_client()
     yield
     # Shutdown

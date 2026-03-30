@@ -1,6 +1,7 @@
 import json
 import os
 import sys
+import types
 from pathlib import Path
 from unittest.mock import AsyncMock, Mock, patch
 
@@ -19,10 +20,47 @@ os.environ.setdefault("TRAINING_API_KEY", "test-api-key")
 os.environ.setdefault("REDIS_URL", "redis://localhost:6379/0")
 
 
+def _install_business_src_package():
+    _install_src_package(business_api_root)
+    _prime_business_task_registry()
+
+
+def _install_src_package(package_root: Path):
+    for name in list(sys.modules):
+        if name == "src" or name.startswith("src."):
+            del sys.modules[name]
+
+    src_pkg = types.ModuleType("src")
+    src_pkg.__path__ = [str(package_root / "src")]
+    api_pkg = types.ModuleType("src.api")
+    api_pkg.__path__ = [str(package_root / "src" / "api")]
+    sys.modules["src"] = src_pkg
+    sys.modules["src.api"] = api_pkg
+
+
+def _prime_business_task_registry():
+    from src.api import task_models, task_registry
+
+    for name in (
+        "TaskExecutionSummaryResponse",
+        "TaskRecordResponse",
+        "TaskListResponse",
+        "TaskDetailResponse",
+        "TrainStatusResponse",
+        "ExportStatusResponse",
+    ):
+        setattr(task_registry, name, getattr(task_models, name))
+
+
+_install_business_src_package()
+
+
 def _build_client(mock_redis, mock_training_client):
     from src.api import gateway
+    from src.api import routes
 
     with patch.object(gateway, "get_redis_client", return_value=mock_redis):
+        routes.get_redis_client = lambda request=None: gateway.get_redis_client()
         app = gateway.app
         app.state.redis = mock_redis
         app.state.training_client = mock_training_client
@@ -541,3 +579,126 @@ def test_training_status_falls_back_to_registry_state_when_execution_unavailable
     assert payload["status"] == "submitted"
     assert payload["progress"] == 0.0
     assert payload["error"] is None
+
+
+def test_training_gateway_imports_without_required_env_vars():
+    try:
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("JWT_SECRET_KEY", None)
+            os.environ.pop("INTERNAL_API_KEY", None)
+            _install_src_package(project_root / "training-api")
+            from src.api import gateway
+
+        assert gateway.verify_internal_api_key("anything") is False
+    finally:
+        _install_business_src_package()
+
+
+def test_business_gateway_imports_without_training_env_vars():
+    try:
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("TRAINING_API_URL", None)
+            os.environ.pop("TRAINING_API_KEY", None)
+            _install_business_src_package()
+            from src.api import gateway
+
+        assert gateway.TRAINING_API_URL is None
+        assert gateway.TRAINING_API_KEY is None
+    finally:
+        _install_business_src_package()
+
+
+def test_export_status_matches_task_detail_execution_snapshot():
+    mock_redis = Mock()
+    mock_redis.get.return_value = json.dumps({
+        "task_id": "export_123",
+        "task_type": "export",
+        "user_id": "test-user",
+        "registry_status": "submitted",
+        "status": "submitted",
+        "created_at": "2026-03-30T09:00:00",
+        "submission": {
+            "model_path": "/tmp/best.pt",
+            "platform": "jetson_orin",
+            "imgsz": 640,
+        },
+    })
+    execution_snapshot = {
+        "task_id": "export_123",
+        "status": "running",
+        "progress": 0.6,
+        "model_path": "/tmp/best.pt",
+        "platform": "jetson_orin",
+        "imgsz": 640,
+        "formats": ["onnx"],
+        "int8_quantize": False,
+        "started_at": "2026-03-30T10:00:00",
+        "export_path": "/tmp/best.onnx",
+    }
+    mock_training_client = Mock()
+    mock_training_client.get_task_status = AsyncMock(return_value=execution_snapshot)
+
+    from src.api import gateway
+    from src.api import routes
+
+    gateway.app.dependency_overrides[routes.get_current_user] = _mock_current_user
+    gateway.app.dependency_overrides[routes.check_rate_limit] = lambda: None
+    try:
+        client = _build_client(mock_redis, mock_training_client)
+        status_response = client.get("/api/v1/deploy/export/status/export_123", headers=_auth_headers())
+        detail_response = client.get("/api/v1/train/tasks/export_123", headers=_auth_headers())
+    finally:
+        gateway.app.dependency_overrides.clear()
+
+    assert status_response.status_code == 200
+    assert detail_response.status_code == 200
+
+    status_payload = status_response.json()
+    task_payload = detail_response.json()["task"]
+    execution = task_payload["execution"]
+
+    assert status_payload["status"] == task_payload["status"] == execution["status"]
+    assert status_payload["progress"] == execution["progress"]
+    assert status_payload["model_path"] == execution["model_path"]
+    assert status_payload["platform"] == execution["platform"]
+    assert status_payload["imgsz"] == execution["imgsz"]
+    assert status_payload["formats"] == execution["formats"]
+    assert status_payload["export_path"] == execution["export_path"]
+
+
+def test_export_status_falls_back_to_registry_submission_when_execution_unavailable():
+    mock_redis = Mock()
+    mock_redis.get.return_value = json.dumps({
+        "task_id": "export_123",
+        "task_type": "export",
+        "user_id": "test-user",
+        "registry_status": "submitted",
+        "status": "submitted",
+        "created_at": "2026-03-30T09:00:00",
+        "submission": {
+            "model_path": "/tmp/best.pt",
+            "platform": "jetson_orin",
+            "imgsz": 640,
+        },
+    })
+    mock_training_client = Mock()
+    mock_training_client.get_task_status = AsyncMock(side_effect=RuntimeError("training api unavailable"))
+
+    from src.api import gateway
+    from src.api import routes
+
+    gateway.app.dependency_overrides[routes.get_current_user] = _mock_current_user
+    gateway.app.dependency_overrides[routes.check_rate_limit] = lambda: None
+    try:
+        client = _build_client(mock_redis, mock_training_client)
+        response = client.get("/api/v1/deploy/export/status/export_123", headers=_auth_headers())
+    finally:
+        gateway.app.dependency_overrides.clear()
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["status"] == "submitted"
+    assert payload["progress"] == 0.0
+    assert payload["model_path"] == "/tmp/best.pt"
+    assert payload["platform"] == "jetson_orin"
+    assert payload["imgsz"] == 640

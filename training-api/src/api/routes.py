@@ -2,10 +2,20 @@
 Training API Internal Routes
 Location: training-api/src/api/routes.py
 
+.. deprecated::
+    This module is deprecated and should be split into smaller modules.
+    New code should use the routes/ package structure.
+
 Contains internal endpoints for:
 - Training task management
 - HPO task management
 - Model export management
+
+Migration plan:
+- models/ - Request/Response models (DONE)
+- store/ - Task storage (DONE)
+- services/ - DynamicTrainingManager (TODO)
+- routes/ - Route handlers (TODO)
 """
 
 import os

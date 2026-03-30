@@ -1,5 +1,10 @@
 """
 API Routes - REST endpoints for YOLO training system.
+
+.. deprecated::
+    This module is deprecated and will be removed in a future release.
+    Use business-api/src/api/routes.py for all new development.
+    The legacy API only maintains backwards compatibility.
 """
 
 from pathlib import Path
@@ -81,6 +86,9 @@ async def search_datasets(request: DatasetSearchRequest):
     """
     Search for datasets across multiple sources.
 
+    .. deprecated::
+        Use business-api/src/api/routes.py /data/search instead.
+
     Supported sources: Roboflow, Kaggle, HuggingFace
     Uses Celery for async processing.
     """
@@ -129,6 +137,9 @@ async def start_training(
     """
     Start YOLO training job.
 
+    .. deprecated::
+        Use business-api/src/api/routes/train_routes.py /train/submit instead.
+
     Submits to Celery task queue.
     """
     task_id = f"train_{uuid.uuid4().hex[:8]}"
@@ -156,7 +167,9 @@ async def start_training(
 async def get_training_status(task_id: str):
     """
     Get training job status from Celery.
-    """
+
+    .. deprecated::
+        Use business-api/src/api/routes/train_routes.py /train/status/{task_id} instead.
     # Use task_id to look up results (in production, store task_id in Redis)
     # For now, return pending status
     return TrainStatusResponse(
@@ -189,7 +202,9 @@ async def export_model(
 ):
     """
     Export model to target platform via Celery.
-    """
+
+    .. deprecated::
+        Use business-api/src/api/routes/deploy_routes.py /deploy/export instead.
     task_id = f"export_{uuid.uuid4().hex[:8]}"
 
     # Submit to Celery task queue

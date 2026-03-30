@@ -40,8 +40,6 @@ BEARER_TOKEN = HTTPBearer(auto_error=False)
 
 # JWT settings
 JWT_SECRET_KEY = os.getenv("JWT_SECRET_KEY")
-if not JWT_SECRET_KEY:
-    raise ValueError("JWT_SECRET_KEY environment variable must be set")
 JWT_ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 30
 
@@ -54,12 +52,22 @@ REDIS_PASSWORD = os.getenv("REDIS_PASSWORD")
 
 # Training API settings - must be set in environment
 TRAINING_API_URL = os.getenv("TRAINING_API_URL")
-if not TRAINING_API_URL:
-    raise ValueError("TRAINING_API_URL environment variable must be set")
-
 TRAINING_API_KEY = os.getenv("TRAINING_API_KEY")
-if not TRAINING_API_KEY:
-    raise ValueError("TRAINING_API_KEY environment variable must be set")
+
+
+def _validate_startup_config():
+    """Validate required configuration when the app actually starts."""
+    missing = []
+    if not JWT_SECRET_KEY:
+        missing.append("JWT_SECRET_KEY")
+    if not TRAINING_API_URL:
+        missing.append("TRAINING_API_URL")
+    if not TRAINING_API_KEY:
+        missing.append("TRAINING_API_KEY")
+    if missing:
+        raise RuntimeError(
+            "Missing required business API configuration: " + ", ".join(missing)
+        )
 
 
 # Redis connection pool (singleton)
@@ -86,6 +94,7 @@ def get_redis_client():
 async def lifespan(app: FastAPI):
     """Application lifespan events."""
     # Startup
+    _validate_startup_config()
     app.state.redis = get_redis_client()
 
     # Import and initialize training client
@@ -174,7 +183,7 @@ from .auth import (
 
 # ==================== Routes ====================
 
-from .routes import (
+from .route_handlers import (
     data_router,
     train_router,
     deploy_router,

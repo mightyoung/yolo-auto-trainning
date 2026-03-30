@@ -1,0 +1,544 @@
+"""Training routes for Business API."""
+
+import asyncio
+import json
+import os
+import uuid
+from datetime import datetime
+from typing import Optional, List
+
+from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks, Request
+from pydantic import BaseModel, Field
+
+from ..auth import get_current_user, CurrentUser, check_rate_limit
+from ..audit import audit_logger
+from ..task_registry import (
+    normalize_task_record,
+    build_task_record,
+    store_task_in_redis,
+    get_task_from_redis,
+    get_user_tasks_from_redis,
+    verify_task_ownership,
+    delete_task_from_redis,
+    attach_execution_snapshot,
+    get_aggregated_task,
+    build_result_summary,
+    build_training_status_response,
+)
+from ..task_models import (
+    TaskListResponse,
+    TaskDetailResponse,
+    TrainStatusResponse,
+)
+
+router = APIRouter()
+
+
+# ==================== Request/Response Models ====================
+
+class TrainRequest(BaseModel):
+    """Training request."""
+    model: str = Field("yolo11m", description="Model size (n/s/m/l/x)")
+    device: str = Field("cuda:0", description="CUDA device for training")
+    data_yaml: str = Field(..., description="Path to dataset YAML")
+    epochs: int = Field(100, description="Number of epochs")
+    imgsz: int = Field(640, description="Image size")
+    batch: int = Field(16, description="Batch size")
+    task_type: str = Field("training", description="Task type: training/hpo")
+    project: str = "/models/auto-detect"
+
+
+class AdjustRequest(BaseModel):
+    """Request to adjust training parameters mid-run (plateau-breaking)."""
+    lr0: Optional[float] = Field(None, description="New initial learning rate")
+    augmentation_preset: Optional[str] = Field(None, description="Augmentation preset: balanced|strong")
+    resume_from: Optional[str] = Field(None, description="Path to best.pt from previous run")
+    additional_epochs: int = Field(0, description="Extra epochs to add to original schedule")
+
+
+class TrainResponse(BaseModel):
+    """Training response."""
+    task_id: str
+    status: str
+    message: str
+    gpu_server: str
+    estimated_time_minutes: Optional[int] = None
+
+
+class ModelCreateRequest(BaseModel):
+    """Create registered model request."""
+    name: str
+    description: str = ""
+    tags: Optional[dict] = {}
+
+
+class ModelTransitionRequest(BaseModel):
+    """Model stage transition request."""
+    version: int
+    stage: str
+
+
+# ==================== Training Endpoints ====================
+
+def get_redis_client(request: Request):
+    """Get Redis client from request app state."""
+    return request.app.state.redis
+
+
+@router.post("/submit", response_model=TrainResponse)
+async def submit_training(
+    request: TrainRequest,
+    background_tasks: BackgroundTasks,
+    http_request: Request,
+    current_user: CurrentUser = Depends(get_current_user),
+    _: None = Depends(check_rate_limit)
+):
+    """Submit a training job to the GPU server."""
+    task_id = f"train_{uuid.uuid4().hex[:8]}"
+
+    try:
+        client = http_request.app.state.training_client
+
+        result = await client.start_training(
+            task_id=task_id,
+            model=request.model,
+            data_yaml=request.data_yaml,
+            epochs=request.epochs,
+            imgsz=request.imgsz,
+            output_dir=f"/home/wangxin/runs/{task_id}",
+            batch=request.batch,
+            device=request.device,
+        )
+
+        task_data = build_task_record(
+            task_id=task_id,
+            task_type="training",
+            user_id=current_user.user_id,
+            submission={
+                "model": request.model,
+                "data_yaml": request.data_yaml,
+                "epochs": request.epochs,
+                "imgsz": request.imgsz,
+                "batch": request.batch,
+                "device": request.device,
+                "output_dir": f"/home/wangxin/runs/{task_id}",
+            },
+        )
+        redis_client = get_redis_client(http_request)
+        store_task_in_redis(redis_client, task_data)
+
+        estimated_time = request.epochs * 2
+
+        audit_logger.log_training(
+            user_id=current_user.user_id,
+            action="submit",
+            task_id=task_id,
+            request=http_request,
+            details={"model": request.model, "epochs": request.epochs, "imgsz": request.imgsz}
+        )
+
+        return TrainResponse(
+            task_id=task_id,
+            status="submitted",
+            message="Training job submitted to GPU server",
+            gpu_server=os.getenv("TRAINING_API_URL", "http://localhost:8001"),
+            estimated_time_minutes=estimated_time
+        )
+
+    except Exception as e:
+        audit_logger.log_training(
+            user_id=current_user.user_id,
+            action="submit_failed",
+            task_id=task_id,
+            request=http_request,
+            details={"model": request.model, "epochs": request.epochs, "error": str(e)}
+        )
+        raise HTTPException(
+            status_code=502,
+            detail=f"Failed to submit training job: {str(e)}"
+        )
+
+
+@router.get("/status/{task_id}", response_model=TrainStatusResponse)
+async def get_training_status(
+    task_id: str,
+    http_request: Request,
+    current_user: CurrentUser = Depends(get_current_user),
+    _: None = Depends(check_rate_limit)
+):
+    """Get training job status from the GPU server."""
+    try:
+        redis_client = get_redis_client(http_request)
+        client = http_request.app.state.training_client
+        task = await get_aggregated_task(redis_client, client, task_id, current_user.user_id)
+        if task is None:
+            raise HTTPException(
+                status_code=404,
+                detail="Task not found or not authorized"
+            )
+
+        audit_logger.log_training(
+            user_id=current_user.user_id,
+            action="status_check",
+            task_id=task_id,
+            request=http_request,
+            details={"status": task.get("status")}
+        )
+
+        return build_training_status_response(task)
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=502,
+            detail=f"Failed to get training status: {str(e)}"
+        )
+
+
+@router.post("/cancel/{task_id}")
+async def cancel_training(
+    task_id: str,
+    http_request: Request,
+    current_user: CurrentUser = Depends(get_current_user),
+    _: None = Depends(check_rate_limit)
+):
+    """Cancel a running training job."""
+    try:
+        redis_client = get_redis_client(http_request)
+        task = verify_task_ownership(redis_client, task_id, current_user.user_id)
+        if task is None:
+            raise HTTPException(
+                status_code=404,
+                detail="Task not found or not authorized"
+            )
+
+        client = http_request.app.state.training_client
+        result = await client.cancel_task(task_id)
+
+        audit_logger.log_training(
+            user_id=current_user.user_id,
+            action="cancel",
+            task_id=task_id,
+            request=http_request
+        )
+
+        return {
+            "task_id": task_id,
+            "status": "cancelled",
+            "message": "Training job cancelled"
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=502,
+            detail=f"Failed to cancel training job: {str(e)}"
+        )
+
+
+@router.post("/adjust/{task_id}")
+async def adjust_training(
+    task_id: str,
+    request: AdjustRequest,
+    http_request: Request,
+    current_user: CurrentUser = Depends(get_current_user),
+    _: None = Depends(check_rate_limit)
+):
+    """Adjust training parameters mid-run to break plateau."""
+    try:
+        redis_client = get_redis_client(http_request)
+        task = verify_task_ownership(redis_client, task_id, current_user.user_id)
+        if task is None:
+            raise HTTPException(
+                status_code=404,
+                detail="Task not found or not authorized"
+            )
+
+        client = http_request.app.state.training_client
+
+        task = normalize_task_record(task)
+        submission = task.get("submission", {})
+        model = submission.get("model", "yolo11m")
+        data_yaml = submission.get("data_yaml", "")
+        original_epochs = submission.get("epochs", 100)
+        imgsz = submission.get("imgsz", 640)
+        batch = submission.get("batch", 16)
+        device = submission.get("device", "cuda:0")
+
+        try:
+            await client.cancel_task(task_id)
+        except Exception:
+            pass
+
+        new_lr0 = request.lr0
+        if new_lr0 is None and request.resume_from:
+            new_lr0 = 0.005
+
+        augmentation_preset = request.augmentation_preset
+        if augmentation_preset is None and request.additional_epochs > 0:
+            augmentation_preset = "strong"
+
+        new_epochs = original_epochs + request.additional_epochs
+        new_task_id = f"train_{uuid.uuid4().hex[:8]}"
+
+        result = await client.start_training(
+            task_id=new_task_id,
+            model=model,
+            data_yaml=data_yaml,
+            epochs=new_epochs,
+            imgsz=imgsz,
+            output_dir=f"/home/wangxin/runs/{new_task_id}",
+            batch=batch,
+            device=device,
+            augmentation_preset=augmentation_preset,
+            resume_from=request.resume_from,
+        )
+
+        task_data = build_task_record(
+            task_id=new_task_id,
+            task_type="training",
+            user_id=current_user.user_id,
+            submission={
+                "model": model,
+                "data_yaml": data_yaml,
+                "epochs": new_epochs,
+                "imgsz": imgsz,
+                "batch": batch,
+                "device": device,
+                "output_dir": f"/home/wangxin/runs/{new_task_id}",
+                "adjusted_from": task_id,
+                "lr0": new_lr0,
+                "augmentation_preset": augmentation_preset,
+                "resume_from": request.resume_from,
+            },
+            links={"adjusted_from": task_id},
+        )
+        store_task_in_redis(redis_client, task_data)
+
+        task = normalize_task_record(task)
+        task.update({
+            "status": "adjusted",
+            "registry_status": "adjusted",
+            "adjusted_to": new_task_id,
+            "adjusted_at": datetime.now().isoformat(),
+        })
+        task["links"]["adjusted_to"] = new_task_id
+        redis_client.set(f"task:{task_id}", json.dumps(task), ex=7 * 24 * 60 * 60)
+
+        audit_logger.log_training(
+            user_id=current_user.user_id,
+            action="adjust",
+            task_id=new_task_id,
+            request=http_request,
+            details={
+                "original_task": task_id,
+                "lr0": new_lr0,
+                "augmentation": augmentation_preset,
+                "resume_from": request.resume_from,
+                "new_epochs": new_epochs,
+            }
+        )
+
+        return {
+            "task_id": new_task_id,
+            "status": "submitted",
+            "message": f"Training adjusted and restarted. New lr0={new_lr0}, augmentation={augmentation_preset}, epochs={new_epochs}",
+            "original_task_id": task_id,
+            "gpu_server": "http://192.168.11.3:8001",
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=502,
+            detail=f"Failed to adjust training: {str(e)}"
+        )
+
+
+@router.get("/tasks", response_model=TaskListResponse)
+async def list_tasks(
+    request: Request,
+    current_user: CurrentUser = Depends(get_current_user),
+    _: None = Depends(check_rate_limit)
+):
+    """List all tasks for the current user."""
+    redis_client = get_redis_client(request)
+    tasks = get_user_tasks_from_redis(redis_client, current_user.user_id)
+    training_client = request.app.state.training_client
+    tasks = await asyncio.gather(*[
+        attach_execution_snapshot(task, training_client) for task in tasks
+    ]) if tasks else []
+    tasks = [{**task, "result_summary": build_result_summary(task)} for task in tasks]
+
+    return TaskListResponse(
+        tasks=tasks,
+        total=len(tasks)
+    )
+
+
+@router.get("/tasks/{task_id}", response_model=TaskDetailResponse)
+async def get_task_detail(
+    task_id: str,
+    request: Request,
+    current_user: CurrentUser = Depends(get_current_user),
+    _: None = Depends(check_rate_limit)
+):
+    """Get a single task detail view."""
+    redis_client = get_redis_client(request)
+    training_client = request.app.state.training_client
+    task = await get_aggregated_task(redis_client, training_client, task_id, current_user.user_id)
+
+    if task is None:
+        raise HTTPException(
+            status_code=404,
+            detail="Task not found or not authorized"
+        )
+
+    return TaskDetailResponse(task=task)
+
+
+@router.delete("/tasks/{task_id}")
+async def delete_task(
+    task_id: str,
+    request: Request,
+    current_user: CurrentUser = Depends(get_current_user),
+    _: None = Depends(check_rate_limit)
+):
+    """Delete a task."""
+    redis_client = get_redis_client(request)
+    success = delete_task_from_redis(redis_client, task_id, current_user.user_id)
+
+    if not success:
+        raise HTTPException(
+            status_code=404,
+            detail="Task not found or not authorized"
+        )
+
+    return {
+        "task_id": task_id,
+        "status": "deleted",
+        "message": "Task deleted successfully"
+    }
+
+
+# ==================== Model Registry Endpoints ====================
+
+@router.get("/models/registry")
+async def list_models(
+    request: Request,
+    current_user: CurrentUser = Depends(get_current_user),
+    _: None = Depends(check_rate_limit)
+):
+    """List all registered models."""
+    try:
+        from src.training.mlflow_tracker import list_registered_models
+        models = list_registered_models()
+        return {
+            "models": [
+                {
+                    "name": m.name,
+                    "description": m.description,
+                    "latest_versions": len(m.latest_versions) if hasattr(m, 'latest_versions') else 0,
+                }
+                for m in models
+            ]
+        }
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to list models: {str(e)}"
+        )
+
+
+@router.post("/models/registry")
+async def create_model(
+    request: ModelCreateRequest,
+    http_request: Request,
+    current_user: CurrentUser = Depends(get_current_user),
+    _: None = Depends(check_rate_limit)
+):
+    """Create a new registered model."""
+    try:
+        from src.training.mlflow_tracker import create_registered_model as create_model_func
+        model = create_model_func(
+            name=request.name,
+            description=request.description,
+            tags=request.tags if request.tags else None
+        )
+        if model:
+            return {"name": model.name, "status": "created"}
+        raise HTTPException(status_code=400, detail="Failed to create model")
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to create model: {str(e)}")
+
+
+@router.get("/models/registry/{name}")
+async def get_model(
+    name: str,
+    stage: str = None,
+    http_request: Request = None,
+    current_user: CurrentUser = Depends(get_current_user),
+    _: None = Depends(check_rate_limit)
+):
+    """Get model versions."""
+    try:
+        from src.training.mlflow_tracker import get_latest_model_versions
+        versions = get_latest_model_versions(name, stage)
+        return {
+            "name": name,
+            "versions": [
+                {
+                    "version": v.version,
+                    "stage": v.current_stage,
+                }
+                for v in versions
+            ] if versions else []
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to get model: {str(e)}")
+
+
+@router.post("/models/registry/{name}/transition")
+async def transition_model(
+    name: str,
+    request: ModelTransitionRequest,
+    http_request: Request,
+    current_user: CurrentUser = Depends(get_current_user),
+    _: None = Depends(check_rate_limit)
+):
+    """Transition model to different stage."""
+    try:
+        from src.training.mlflow_tracker import transition_model_stage
+        result = transition_model_stage(name, request.version, request.stage)
+        if result:
+            return {"name": name, "version": request.version, "stage": request.stage, "status": "success"}
+        raise HTTPException(status_code=400, detail="Failed to transition")
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to transition: {str(e)}")
+
+
+@router.delete("/models/registry/{name}")
+async def delete_model(
+    name: str,
+    http_request: Request,
+    current_user: CurrentUser = Depends(get_current_user),
+    _: None = Depends(check_rate_limit)
+):
+    """Delete a registered model."""
+    try:
+        from src.training.mlflow_tracker import delete_registered_model
+        success = delete_registered_model(name)
+        if success:
+            return {"status": "deleted", "name": name}
+        raise HTTPException(status_code=400, detail="Failed to delete model")
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to delete: {str(e)}")
