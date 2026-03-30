@@ -697,14 +697,14 @@ async def adjust_training(
 
         client = http_request.app.state.training_client
 
-        # Get current task params from Redis
-        params = task.get("params", {})
-        model = params.get("model", "yolo11m")
-        data_yaml = params.get("data_yaml", "")
-        original_epochs = params.get("epochs", 100)
-        imgsz = params.get("imgsz", 640)
-        batch = params.get("batch", 16)
-        device = params.get("device", "cuda:0")
+        task = normalize_task_record(task)
+        submission = task.get("submission", {})
+        model = submission.get("model", "yolo11m")
+        data_yaml = submission.get("data_yaml", "")
+        original_epochs = submission.get("epochs", 100)
+        imgsz = submission.get("imgsz", 640)
+        batch = submission.get("batch", 16)
+        device = submission.get("device", "cuda:0")
 
         # Cancel current training
         try:
@@ -1206,19 +1206,20 @@ async def analyze_dataset(
         )
 
         # Store task in Redis with user_id for isolation
-        task_data = {
-            "task_id": task_id,
-            "task_type": "analysis",
-            "user_id": current_user.user_id,
-            "status": "completed" if "error" not in result else "failed",
-            "created_at": datetime.now().isoformat(),
-            "params": {
+        task_data = build_task_record(
+            task_id=task_id,
+            task_type="analysis",
+            user_id=current_user.user_id,
+            registry_status="completed" if "error" not in result else "failed",
+            submission={
                 "dataset_path": request.dataset_path,
                 "analysis_type": request.analysis_type
             },
+        )
+        task_data.update({
             "result": result if "error" not in result else None,
             "error": result.get("error") if "error" in result else None
-        }
+        })
         redis_client = get_redis_client(http_request)
         store_task_in_redis(redis_client, task_data)
 
@@ -1284,6 +1285,23 @@ async def generate_report(
             data_description=request.data_description,
             analysis_goals=request.analysis_goals
         )
+
+        task_data = build_task_record(
+            task_id=task_id,
+            task_type="report",
+            user_id=current_user.user_id,
+            registry_status="completed" if "error" not in result else "failed",
+            submission={
+                "data_description": request.data_description,
+                "analysis_goals": request.analysis_goals,
+            },
+        )
+        task_data.update({
+            "result": result if "error" not in result else None,
+            "error": result.get("error") if "error" in result else None,
+        })
+        redis_client = get_redis_client(http_request)
+        store_task_in_redis(redis_client, task_data)
 
         if "error" in result:
             return ReportResponse(

@@ -119,6 +119,7 @@ def test_adjust_training_updates_original_task_and_reuses_original_params():
     updated_original = json.loads(mock_redis.set.call_args_list[-1].args[1])
     assert updated_original["status"] == "adjusted"
     assert updated_original["adjusted_to"].startswith("train_")
+    assert updated_original["submission"]["model"] == "yolo11x"
 
 
 def test_business_status_exposes_resubmit_metadata():
@@ -265,3 +266,77 @@ def test_list_tasks_falls_back_to_registry_summary_when_execution_unavailable():
     assert task["status"] == "submitted"
     assert task["execution_summary"]["status"] == "submitted"
     assert task["execution_summary"]["progress"] is None
+
+
+def test_analysis_task_uses_normalized_submission_schema():
+    mock_redis = Mock()
+    mock_training_client = Mock()
+
+    from src.api import gateway
+    from src.api import routes
+
+    class FakeDeepAnalyzeClient:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def health_check(self):
+            return True
+
+        def analyze_dataset(self, dataset_path, analysis_type):
+            return {"content": "ok", "files": []}
+
+    gateway.app.dependency_overrides[routes.get_current_user] = _mock_current_user
+    gateway.app.dependency_overrides[routes.check_rate_limit] = lambda: None
+    try:
+        with patch("src.api.deepanalyze_client.DeepAnalyzeClient", FakeDeepAnalyzeClient):
+            client = _build_client(mock_redis, mock_training_client)
+            response = client.post(
+                "/api/v1/analysis/analyze",
+                json={"dataset_path": "/data/train.csv", "analysis_type": "quality"},
+                headers=_auth_headers(),
+            )
+    finally:
+        gateway.app.dependency_overrides.clear()
+
+    assert response.status_code == 200
+    stored_payload = json.loads(mock_redis.set.call_args.args[1])
+    assert stored_payload["task_type"] == "analysis"
+    assert stored_payload["submission"]["dataset_path"] == "/data/train.csv"
+    assert stored_payload["registry_status"] == "completed"
+
+
+def test_report_task_is_persisted_with_normalized_schema():
+    mock_redis = Mock()
+    mock_training_client = Mock()
+
+    from src.api import gateway
+    from src.api import routes
+
+    class FakeDeepAnalyzeClient:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def health_check(self):
+            return True
+
+        def generate_report(self, data_description, analysis_goals):
+            return {"content": "report", "files": []}
+
+    gateway.app.dependency_overrides[routes.get_current_user] = _mock_current_user
+    gateway.app.dependency_overrides[routes.check_rate_limit] = lambda: None
+    try:
+        with patch("src.api.deepanalyze_client.DeepAnalyzeClient", FakeDeepAnalyzeClient):
+            client = _build_client(mock_redis, mock_training_client)
+            response = client.post(
+                "/api/v1/analysis/report",
+                json={"data_description": "sales", "analysis_goals": ["trend"]},
+                headers=_auth_headers(),
+            )
+    finally:
+        gateway.app.dependency_overrides.clear()
+
+    assert response.status_code == 200
+    stored_payload = json.loads(mock_redis.set.call_args.args[1])
+    assert stored_payload["task_type"] == "report"
+    assert stored_payload["submission"]["analysis_goals"] == ["trend"]
+    assert stored_payload["registry_status"] == "completed"
