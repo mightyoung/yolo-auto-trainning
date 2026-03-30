@@ -197,63 +197,6 @@ class TestTrainRouter:
         assert "metrics" in data
         assert data["metrics"]["mAP50"] == 0.85
 
-    def test_get_training_status_includes_resubmit_metadata(self, client, mock_training_client):
-        """Expose training API auto-resubmit metadata to business clients."""
-        mock_training_client.get_task_status = AsyncMock(return_value={
-            "task_id": "train_abc123",
-            "status": "running",
-            "progress": 0.25,
-            "resubmit_count": 2,
-            "last_resubmitted_at": "2026-03-30T10:00:00",
-            "resubmit_reason": "failed_task",
-        })
-
-        response = client.get("/api/v1/train/status/train_abc123")
-
-        assert response.status_code == 200
-        data = response.json()
-        assert data["resubmit_count"] == 2
-        assert data["resubmit_reason"] == "failed_task"
-
-    def test_adjust_training_updates_original_task_and_preserves_params(self, client, mock_redis, mock_training_client):
-        """Adjustment should overwrite the original task record and reuse original device/batch."""
-        original_task = {
-            "task_id": "train_abc123",
-            "task_type": "training",
-            "user_id": "test-user",
-            "status": "running",
-            "created_at": "2026-03-30T09:00:00",
-            "params": {
-                "model": "yolo11x",
-                "data_yaml": "/data/test.yaml",
-                "epochs": 100,
-                "imgsz": 1280,
-                "batch": 8,
-                "device": "cuda:1",
-            },
-        }
-        mock_redis.get.return_value = json.dumps(original_task)
-        mock_training_client.start_training = AsyncMock(return_value={
-            "task_id": "train_new123",
-            "status": "started",
-        })
-
-        response = client.post(
-            "/api/v1/train/adjust/train_abc123",
-            json={"additional_epochs": 20, "resume_from": "/tmp/best.pt"},
-        )
-
-        assert response.status_code == 200
-        adjust_kwargs = mock_training_client.start_training.await_args.kwargs
-        assert adjust_kwargs["batch"] == 8
-        assert adjust_kwargs["device"] == "cuda:1"
-
-        set_calls = mock_redis.set.call_args_list
-        assert any(call.args[0] == "task:train_abc123" for call in set_calls)
-        updated_original = next(call for call in set_calls if call.args[0] == "task:train_abc123")
-        updated_payload = json.loads(updated_original.args[1])
-        assert updated_payload["status"] == "adjusted"
-        assert updated_payload["adjusted_to"].startswith("train_")
 
     def test_cancel_training(self, client, mock_training_client):
         """Cancel a training job."""

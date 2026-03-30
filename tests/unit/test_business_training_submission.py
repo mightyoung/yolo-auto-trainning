@@ -1,0 +1,158 @@
+import json
+import os
+import sys
+from pathlib import Path
+from unittest.mock import AsyncMock, Mock, patch
+
+from fastapi.testclient import TestClient
+
+
+project_root = Path(__file__).parent.parent.parent
+business_api_root = project_root / "business-api"
+if str(business_api_root) not in sys.path:
+    sys.path.insert(0, str(business_api_root))
+
+
+os.environ.setdefault("JWT_SECRET_KEY", "test-secret-key")
+os.environ.setdefault("TRAINING_API_URL", "http://localhost:8001")
+os.environ.setdefault("TRAINING_API_KEY", "test-api-key")
+os.environ.setdefault("REDIS_URL", "redis://localhost:6379/0")
+
+
+def _build_client(mock_redis, mock_training_client):
+    from src.api import gateway
+
+    with patch.object(gateway, "get_redis_client", return_value=mock_redis):
+        app = gateway.app
+        app.state.redis = mock_redis
+        app.state.training_client = mock_training_client
+        return TestClient(app)
+
+
+def _auth_headers():
+    return {"Authorization": "Bearer test-token"}
+
+
+def _mock_current_user():
+    return type("CurrentUser", (), {"user_id": "test-user"})()
+
+
+def test_submit_training_persists_device_and_batch():
+    mock_redis = Mock()
+    mock_training_client = Mock()
+    mock_training_client.start_training = AsyncMock(return_value={"task_id": "train_123", "status": "started"})
+
+    from src.api import gateway
+    from src.api import routes
+
+    gateway.app.dependency_overrides[routes.get_current_user] = _mock_current_user
+    gateway.app.dependency_overrides[routes.check_rate_limit] = lambda: None
+    try:
+        client = _build_client(mock_redis, mock_training_client)
+        response = client.post(
+            "/api/v1/train/submit",
+            json={
+                "model": "yolo11x",
+                "data_yaml": "/data/test.yaml",
+                "epochs": 20,
+                "imgsz": 1280,
+                "batch": 8,
+                "device": "cuda:1",
+            },
+            headers=_auth_headers(),
+        )
+    finally:
+        gateway.app.dependency_overrides.clear()
+
+    assert response.status_code == 200
+    kwargs = mock_training_client.start_training.await_args.kwargs
+    assert kwargs["batch"] == 8
+    assert kwargs["device"] == "cuda:1"
+
+    stored_payload = json.loads(mock_redis.set.call_args.args[1])
+    assert stored_payload["params"]["batch"] == 8
+    assert stored_payload["params"]["device"] == "cuda:1"
+
+
+def test_adjust_training_updates_original_task_and_reuses_original_params():
+    mock_redis = Mock()
+    mock_training_client = Mock()
+    mock_training_client.cancel_task = AsyncMock(return_value={"task_id": "train_old", "status": "cancelled"})
+    mock_training_client.start_training = AsyncMock(return_value={"task_id": "train_new", "status": "started"})
+    original_task = {
+        "task_id": "train_old",
+        "task_type": "training",
+        "user_id": "test-user",
+        "status": "running",
+        "created_at": "2026-03-30T09:00:00",
+        "params": {
+            "model": "yolo11x",
+            "data_yaml": "/data/test.yaml",
+            "epochs": 100,
+            "imgsz": 1280,
+            "batch": 8,
+            "device": "cuda:1",
+        },
+    }
+    mock_redis.get.return_value = json.dumps(original_task)
+
+    from src.api import gateway
+    from src.api import routes
+
+    gateway.app.dependency_overrides[routes.get_current_user] = _mock_current_user
+    gateway.app.dependency_overrides[routes.check_rate_limit] = lambda: None
+    try:
+        client = _build_client(mock_redis, mock_training_client)
+        response = client.post(
+            "/api/v1/train/adjust/train_old",
+            json={"additional_epochs": 20, "resume_from": "/tmp/best.pt"},
+            headers=_auth_headers(),
+        )
+    finally:
+        gateway.app.dependency_overrides.clear()
+
+    assert response.status_code == 200
+    kwargs = mock_training_client.start_training.await_args.kwargs
+    assert kwargs["batch"] == 8
+    assert kwargs["device"] == "cuda:1"
+
+    updated_original = json.loads(mock_redis.set.call_args_list[-1].args[1])
+    assert updated_original["status"] == "adjusted"
+    assert updated_original["adjusted_to"].startswith("train_")
+
+
+def test_business_status_exposes_resubmit_metadata():
+    mock_redis = Mock()
+    owned_task = {
+        "task_id": "train_123",
+        "task_type": "training",
+        "user_id": "test-user",
+        "status": "submitted",
+        "created_at": "2026-03-30T09:00:00",
+    }
+    mock_redis.get.return_value = json.dumps(owned_task)
+    mock_training_client = Mock()
+    mock_training_client.get_task_status = AsyncMock(return_value={
+        "task_id": "train_123",
+        "status": "running",
+        "progress": 0.5,
+        "resubmit_count": 2,
+        "last_resubmitted_at": "2026-03-30T10:00:00",
+        "resubmit_reason": "failed_task",
+    })
+
+    from src.api import gateway
+    from src.api import routes
+
+    gateway.app.dependency_overrides[routes.get_current_user] = _mock_current_user
+    gateway.app.dependency_overrides[routes.check_rate_limit] = lambda: None
+    try:
+        client = _build_client(mock_redis, mock_training_client)
+        response = client.get("/api/v1/train/status/train_123", headers=_auth_headers())
+    finally:
+        gateway.app.dependency_overrides.clear()
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["resubmit_count"] == 2
+    assert data["resubmit_reason"] == "failed_task"

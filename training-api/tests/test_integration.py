@@ -188,7 +188,7 @@ class TestTrainingEndpoints:
         from src.api import routes as training_routes
 
         task_id = "resubmit_001"
-        training_routes._task_set(task_id, {
+        candidate = {
             "task_id": task_id,
             "type": "training",
             "status": "failed",
@@ -201,13 +201,18 @@ class TestTrainingEndpoints:
             "device": "cuda:0",
             "created_at": "2026-03-30T09:00:00",
             "error": "OOM",
-        })
+        }
+        training_routes._task_set(task_id, candidate)
 
         class FakeLoop:
             def run_in_executor(self, executor, fn, *args):
                 return None
 
-        with patch("src.api.routes.get_redis_client", return_value=None), \
+        fake_redis = Mock()
+        fake_redis.get.return_value = json.dumps(candidate)
+        fake_redis.hgetall.return_value = {}
+
+        with patch("src.api.routes.get_redis_client", return_value=fake_redis), \
              patch("src.api.routes.asyncio.get_event_loop", return_value=FakeLoop()), \
              patch("src.api.routes.time.sleep", return_value=None):
             response = client.get(f"/api/v1/internal/train/status/{task_id}", headers=auth_headers)
