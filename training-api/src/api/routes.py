@@ -55,105 +55,16 @@ _retry_counts: Dict[str, int] = {}
 
 # ==================== Request/Response Models ====================
 
-class TrainStartRequest(BaseModel):
-    """Internal training start request."""
-    task_id: str = Field(..., description="Task identifier")
-    model: str = Field("yolo11m", description="Model size")
-    data_yaml: str = Field(..., description="Dataset YAML path")
-    epochs: int = Field(100, description="Number of epochs")
-    imgsz: int = Field(640, description="Image size")
-    batch: int = Field(16, description="Batch size")
-    output_dir: str = Field("/home/wangxin/runs", description="Output directory")
-    device: str = Field("cuda:0", description="Device")
-    auto_export: bool = Field(True, description="Automatically trigger ONNX export after training completes")
-    augmentation_preset: Optional[str] = Field(None, description="Augmentation preset: fast, balanced, strong")
-    # HPO-injected params (optional)
-    lr0: Optional[float] = Field(None, description="Initial learning rate (from HPO)")
-    lrf: Optional[float] = Field(None, description="Final learning rate factor (from HPO)")
-    weight_decay: Optional[float] = Field(None, description="L2 regularization (from HPO)")
-    momentum: Optional[float] = Field(None, description="SGD momentum (from HPO)")
-    # Best.pt inheritance (optional) - resume training from a trained checkpoint
-    resume_from: Optional[str] = Field(None, description="Path to best.pt for transfer learning")
-
-
-class TrainStatusResponse(BaseModel):
-    """Training status response."""
-    task_id: str
-    status: str  # submitted, running, completed, failed
-    progress: float = 0.0
-    current_epoch: Optional[int] = None
-    total_epochs: Optional[int] = None
-    metrics: Optional[dict] = None
-    error: Optional[str] = None
-    early_stopped: Optional[bool] = None
-    started_at: Optional[str] = None
-    completed_at: Optional[str] = None
-    # Plateau detection fields (populated when training plateaus)
-    live_mAP50: Optional[float] = None
-    lr_decay_triggered: Optional[bool] = None
-    lr_decay_signal: Optional[dict] = None
-    augment_boost_active: Optional[bool] = None
-    augment_boost_signal: Optional[dict] = None
-    data_expansion_requested: Optional[bool] = None
-    data_expansion_signal: Optional[dict] = None
-    strategies_triggered: Optional[list] = None
-    resubmit_count: Optional[int] = None
-    last_resubmitted_at: Optional[str] = None
-    resubmit_reason: Optional[str] = None
-    # Curriculum training fields (populated during progressive 3-stage training)
-    curriculum_stage: Optional[str] = None
-    curriculum_stage_num: Optional[int] = None
-    curriculum_stage_history: Optional[list] = None
-    curriculum_stage_mAP: Optional[float] = None
-
-
-class HPOStartRequest(BaseModel):
-    """HPO start request."""
-    task_id: str
-    model: str = "yolo11m"
-    data_yaml: str
-    n_trials: int = 50
-    epochs_per_trial: int = 50
-    strategy: str = Field("asha", description="HPO strategy: 'asha' (Ray Tune ASHA) or 'bayesian' (GP+EI via scikit-optimize)")
-
-
-class ExportStartRequest(BaseModel):
-    """Export start request."""
-    task_id: str
-    model_path: str
-    platform: str = "jetson_orin"
-    imgsz: int = 640
-    formats: List[str] = Field(default_factory=lambda: ["onnx"])
-    int8_quantize: bool = Field(False, description="Enable INT8 quantization (requires calibration data)")
-
-
-class BenchmarkRunRequest(BaseModel):
-    """Benchmark run request."""
-    task_id: str = Field(..., description="Task identifier")
-    model_path: str = Field(..., description="Path to exported model file")
-    format: str = Field("onnx", description="Model format for reporting")
-    imgsz: int = Field(640, description="Image size for benchmark")
-    warmup: int = Field(10, description="Number of warmup runs")
-    runs: int = Field(100, description="Number of timed runs")
-
-
-class ActiveLearnSelectRequest(BaseModel):
-    """Active learning sample selection request."""
-    model_path: str = Field(..., description="Path to current YOLO model")
-    image_pool_dir: str = Field(..., description="Directory containing unlabeled images")
-    top_k: int = Field(100, description="Number of samples to select")
-    strategy: str = Field("entropy", description="Selection strategy: entropy / margin / density / random")
-
-
-class SemiSupervisedRequest(BaseModel):
-    """Semi-supervised learning request."""
-    task_id: str
-    labeled_data_yaml: str = Field(..., description="YAML for labeled training data")
-    unlabeled_image_dir: str = Field(..., description="Directory with unlabeled images")
-    method: str = Field("yolo_teacher", description="Pseudo-label method: yolo_teacher / sam / hybrid")
-    confidence_threshold: float = Field(0.7, description="Min confidence for pseudo-labels")
-    iterations: int = Field(1, description="Number of self-training iterations")
-    epochs: int = Field(50, description="Training epochs per iteration")
+# Import models from centralized models package
+from .models import (
+    TrainStartRequest,
+    TrainStatusResponse,
+    HPOStartRequest,
+    ExportStartRequest,
+    BenchmarkRunRequest,
+    ActiveLearnSelectRequest,
+    SemiSupervisedRequest,
+)
 
 
 # ==================== Create Router ====================
@@ -163,77 +74,26 @@ router = APIRouter()
 
 # ==================== Task Storage ====================
 
-# Redis-backed task storage with L1 in-memory cache.
-# On reads: check local dict first, then Redis, populate cache on miss.
-# On writes: write-through to both local dict and Redis.
-# Key pattern in Redis: training:task:{task_id}
-
-_redis_client = get_redis_client()
-_tasks_cache: dict = {}
-_tasks_lock = threading.Lock()
-
-
-def _task_get(task_id: str) -> Optional[dict]:
-    """Read a task. L1 dict cache, then Redis."""
-    with _tasks_lock:
-        if task_id in _tasks_cache:
-            return _tasks_cache[task_id]
-    if _redis_client is None:
-        return None
-    try:
-        key = f"training:task:{task_id}"
-        raw = _redis_client.get(key)
-        if raw:
-            task = json.loads(raw)
-            with _tasks_lock:
-                _tasks_cache[task_id] = task
-            return task
-    except Exception:
-        pass
-    return None
-
-
-def _task_set(task_id: str, task: dict) -> None:
-    """Write a task. Write-through to local cache and Redis."""
-    with _tasks_lock:
-        _tasks_cache[task_id] = task
-    if _redis_client is None:
-        return
-    try:
-        key = f"training:task:{task_id}"
-        _redis_client.set(key, json.dumps(task))
-    except Exception as e:
-        # Log but don't fail the request
-        print(f"[_task_set] Redis write failed for {task_id}: {e}")
-
-
-def _task_del(task_id: str) -> None:
-    """Delete a task from local cache and Redis."""
-    with _tasks_lock:
-        _tasks_cache.pop(task_id, None)
-    if _redis_client is None:
-        return
-    try:
-        _redis_client.delete(f"training:task:{task_id}")
-    except Exception as e:
-        print(f"[_task_del] Redis delete failed for {task_id}: {e}")
-
-
-# Cancellation registry: task_id -> threading.Event
-# Stored separately from task records so Event objects aren't JSON-serialised.
-_cancel_events: dict[str, threading.Event] = {}
-_cancel_lock = threading.Lock()
+# Import centralized task storage from store package
+# This ensures a single source of truth for cache and lock
+from .store.task_store import (
+    _tasks_cache,
+    _tasks_lock,
+    _task_get,
+    _task_set,
+    _task_del,
+    _cancel_events,
+    _cancel_lock,
+)
 
 
 # ==================== Dynamic Training Manager ====================
 
 class DynamicTrainingManager:
-    """Monitors training metrics in real-time and triggers plateau-breaking strategies.
+    """Backward-compatible wrapper around PlateauManager.
 
-    Tracks mAP50 history with a sliding window. When improvement stalls:
-      Level 1: Reduce learning rate by factor (up to 3 times)
-      Level 2: Boost augmentation for a burst window, then restore
-      Level 3: Log expansion signal to task cache for Business API to trigger ActiveLearning
+    Phase 3.1 refactoring: Delegates plateau detection to PlateauManager,
+    which handles all plateau detection logic and cache updates internally.
     """
 
     def __init__(
@@ -242,215 +102,27 @@ class DynamicTrainingManager:
         plateau_config: "PlateauBreakingConfig",
         device: str = "cuda:0",
     ):
+        from src.training.plateau_manager import PlateauManager
+
         self.task_id = task_id
         self.cfg = plateau_config
         self.device = device
-        self._map_history: list[tuple[int, float]] = []  # (epoch, mAP50)
-        self._lr_reduction_count = 0
-        self._augment_boost_active = False
-        self._augment_boost_remaining = 0
-        self._expansion_round = 0
-        self._signaled_expansion = False
-        self._original_augment: dict = {}
-        self._triggered_strategies: list[dict] = []
-        self._last_reported_epoch = -1
+
+        # PlateauManager handles plateau detection and cache updates
+        self._manager = PlateauManager(
+            task_id=task_id,
+            config=plateau_config,
+        )
 
     def on_metric(self, epoch: int, total_epochs: int, metrics: dict[str, float]) -> None:
-        """Called each epoch with current metrics. Returns dict of adjustments or None."""
-        if not self.cfg.enabled:
-            return
-        if epoch <= self._last_reported_epoch:
-            return
-        self._last_reported_epoch = epoch
-
-        mAP50 = metrics.get("mAP50", 0.0)
-        self._map_history.append((epoch, mAP50))
-
-        # Keep history bounded
-        if len(self._map_history) > self.cfg.window * 3:
-            self._map_history = self._map_history[-self.cfg.window * 2:]
-
-        # Update cache with live metrics
-        with _tasks_lock:
-            if self.task_id in _tasks_cache:
-                _tasks_cache[self.task_id]["live_metrics"] = metrics
-                _tasks_cache[self.task_id]["live_mAP50"] = mAP50
-                _tasks_cache[self.task_id]["strategies_triggered"] = self._triggered_strategies
-
-        # Don't trigger before minimum epoch threshold
-        if epoch < self.cfg.min_epochs_before_trigger:
-            return
-
-        # Handle augmentation boost countdown
-        if self._augment_boost_remaining > 0:
-            self._augment_boost_remaining -= 1
-            if self._augment_boost_remaining == 0:
-                self._end_augment_boost()
-
-        # Check for plateau
-        strategy = self._check_plateau(epoch)
-        if strategy:
-            self._trigger_strategy(strategy)
-
-    def _check_plateau(self, current_epoch: int) -> Optional[dict]:
-        """Detect plateau using sliding window comparison. Returns strategy dict or None."""
-        if len(self._map_history) < self.cfg.window:
-            return None
-
-        recent = self._map_history[-self.cfg.window:]
-        older = self._map_history[-self.cfg.window * 2:-self.cfg.window]
-
-        if not recent or not older:
-            return None
-
-        avg_recent = sum(m for _, m in recent) / len(recent)
-        avg_older = sum(m for _, m in older) / len(older)
-        improvement = avg_recent - avg_older
-
-        if improvement >= self.cfg.min_improvement:
-            return None  # Still improving, not plateau
-
-        # Plateau detected — determine best strategy
-        if self._lr_reduction_count < self.cfg.lr_reduction_max_times:
-            return {
-                "level": 1,
-                "action": "lr_decay",
-                "improvement": improvement,
-                "avg_recent": avg_recent,
-            }
-        elif not self._augment_boost_active:
-            return {
-                "level": 2,
-                "action": "augment_boost",
-                "improvement": improvement,
-                "avg_recent": avg_recent,
-            }
-        elif not self._signaled_expansion:
-            target_map = self.cfg.expansion_target_map
-            current_best = max(m for _, m in self._map_history) if self._map_history else 0
-            if current_best >= target_map - 0.05 and self._expansion_round < self.cfg.max_expansion_rounds:
-                return {
-                    "level": 3,
-                    "action": "data_expansion",
-                    "improvement": improvement,
-                    "avg_recent": avg_recent,
-                    "current_best": current_best,
-                }
-
-        return None
-
-    def _trigger_strategy(self, strategy: dict) -> None:
-        level = strategy["level"]
-        action = strategy["action"]
-        logging.warning(
-            f"[{self.task_id}][PLATEAU] Level-{level} {action} triggered: "
-            f"improvement={strategy['improvement']:.5f}, avg_mAP50={strategy['avg_recent']:.5f}"
-        )
-        self._triggered_strategies.append({
-            "epoch": self._last_reported_epoch,
-            "level": level,
-            "action": action,
-            "mAP50": strategy.get("avg_recent", 0),
-        })
-
-        if level == 1:
-            self._apply_lr_decay()
-        elif level == 2:
-            self._start_augment_boost()
-        elif level == 3:
-            self._signal_data_expansion(strategy)
-
-    def _apply_lr_decay(self) -> None:
-        """Signal LR reduction to task cache for Business API to handle."""
-        self._lr_reduction_count += 1
-        new_lr = max(
-            self.cfg.min_lr,
-            self.cfg.lr_reduction_factor,
-        )
-        with _tasks_lock:
-            if self.task_id in _tasks_cache:
-                _tasks_cache[self.task_id]["lr_decay_triggered"] = True
-                _tasks_cache[self.task_id]["lr_decay_count"] = self._lr_reduction_count
-                _tasks_cache[self.task_id]["lr_decay_signal"] = {
-                    "factor": self.cfg.lr_reduction_factor,
-                    "min_lr": self.cfg.min_lr,
-                    "epoch": self._last_reported_epoch,
-                    "current_mAP50": self._map_history[-1][1] if self._map_history else 0,
-                }
-        logging.info(
-            f"[{self.task_id}][PLATEAU] LR decay #{self._lr_reduction_count} "
-            f"signaled to Business API. Cache updated."
-        )
-
-    def _start_augment_boost(self) -> None:
-        """Signal augmentation boost to task cache."""
-        self._augment_boost_active = True
-        self._augment_boost_remaining = self.cfg.augmentation_boost_epochs
-        with _tasks_lock:
-            if self.task_id in _tasks_cache:
-                _tasks_cache[self.task_id]["augment_boost_active"] = True
-                _tasks_cache[self.task_id]["augment_boost_remaining"] = self._augment_boost_remaining
-                _tasks_cache[self.task_id]["augment_boost_signal"] = {
-                    "epochs": self.cfg.augmentation_boost_epochs,
-                    "mixup": self.cfg.boosted_mixup,
-                    "copy_paste": self.cfg.boosted_copy_paste,
-                    "degrees": self.cfg.boosted_degrees,
-                    "translate": self.cfg.boosted_translate,
-                    "scale": self.cfg.boosted_scale,
-                    "start_epoch": self._last_reported_epoch,
-                }
-        logging.info(
-            f"[{self.task_id}][PLATEAU] Augmentation boost STARTED for {self.cfg.augmentation_boost_epochs} epochs. "
-            f"mixup={self.cfg.boosted_mixup}, copy_paste={self.cfg.boosted_copy_paste}"
-        )
-
-    def _end_augment_boost(self) -> None:
-        """Signal augmentation boost ended."""
-        self._augment_boost_active = False
-        with _tasks_lock:
-            if self.task_id in _tasks_cache:
-                _tasks_cache[self.task_id]["augment_boost_active"] = False
-                _tasks_cache[self.task_id]["augment_boost_signal"] = None
-        logging.info(f"[{self.task_id}][PLATEAU] Augmentation boost ENDED. Resuming normal augmentation.")
-
-    def _signal_data_expansion(self, strategy: dict) -> None:
-        """Signal data expansion request to Business API via cache."""
-        self._signaled_expansion = True
-        self._expansion_round += 1
-        with _tasks_lock:
-            if self.task_id in _tasks_cache:
-                _tasks_cache[self.task_id]["data_expansion_requested"] = True
-                _tasks_cache[self.task_id]["data_expansion_round"] = self._expansion_round
-                _tasks_cache[self.task_id]["data_expansion_signal"] = {
-                    "round": self._expansion_round,
-                    "current_mAP50": strategy.get("avg_recent", 0),
-                    "target_mAP50": self.cfg.expansion_target_map,
-                    "epoch": self._last_reported_epoch,
-                    "recommendation": (
-                        f"Use ActiveLearningPipeline to expand dataset. "
-                        f"Current best mAP50={strategy.get('current_best', 0):.4f}, "
-                        f"target={self.cfg.expansion_target_map:.2f}. "
-                        f"Suggest searching HuggingFace/Kaggle for fire+smoke detection datasets."
-                    ),
-                }
-        logging.warning(
-            f"[{self.task_id}][PLATEAU] Data expansion signal sent to Business API "
-            f"(round {self._expansion_round}). mAP50={strategy.get('avg_recent', 0):.4f}"
-        )
+        """Called each epoch with current metrics."""
+        decision = self._manager.on_metric(epoch, total_epochs, metrics)
+        if decision.triggered:
+            self._manager.apply_decision(decision)
 
     def get_status(self) -> dict:
         """Return current plateau detection status."""
-        return {
-            "enabled": self.cfg.enabled,
-            "lr_reduction_count": self._lr_reduction_count,
-            "augment_boost_active": self._augment_boost_active,
-            "augment_boost_remaining": self._augment_boost_remaining,
-            "expansion_round": self._expansion_round,
-            "signaled_expansion": self._signaled_expansion,
-            "current_best_mAP50": max((m for _, m in self._map_history), default=0.0),
-            "recent_mAP50": self._map_history[-1][1] if self._map_history else 0.0,
-            "strategies_triggered": self._triggered_strategies,
-        }
+        return self._manager.get_status()
 
 
 # ==================== Training Endpoints ====================
