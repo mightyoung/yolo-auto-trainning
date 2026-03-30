@@ -9,7 +9,7 @@ Contains:
 """
 
 from pathlib import Path
-from typing import Optional, List
+from typing import Optional, List, Dict, Any
 from datetime import datetime
 import uuid
 import asyncio
@@ -52,7 +52,6 @@ def normalize_task_record(task_data: Optional[dict]) -> Optional[dict]:
         links.setdefault("execution_task_id", normalized.get("task_id"))
 
     normalized["submission"] = submission
-    normalized["params"] = submission
     normalized["links"] = links
     normalized["registry_status"] = normalized.get("registry_status", normalized.get("status", "submitted"))
     return normalized
@@ -80,7 +79,6 @@ def build_task_record(
         "registry_status": registry_status,
         "created_at": datetime.now().isoformat(),
         "submission": submission,
-        "params": submission,
         "links": record_links,
     })
 
@@ -293,8 +291,33 @@ class ReportResponse(BaseModel):
 
 class TaskListResponse(BaseModel):
     """Task list response with user isolation."""
-    tasks: List[dict]
+    tasks: List["TaskRecordResponse"]
     total: int
+
+
+class TaskExecutionSummaryResponse(BaseModel):
+    """Stable execution summary for list/detail views."""
+    status: str
+    progress: Optional[float] = None
+    updated_at: Optional[str] = None
+    error: Optional[str] = None
+
+
+class TaskRecordResponse(BaseModel):
+    """Normalized business task registry record."""
+    task_id: str
+    task_type: str
+    user_id: str
+    created_at: str
+    status: str
+    registry_status: str
+    submission: Dict[str, Any] = Field(default_factory=dict)
+    links: Dict[str, Any] = Field(default_factory=dict)
+    execution_summary: TaskExecutionSummaryResponse
+    execution: Optional[Dict[str, Any]] = None
+    result: Optional[Dict[str, Any]] = None
+    result_summary: Optional[Dict[str, Any]] = None
+    error: Optional[str] = None
 
 
 async def _attach_execution_snapshot(task: dict, training_client) -> dict:
@@ -331,7 +354,9 @@ async def _get_aggregated_task(redis_client, training_client, task_id: str, user
     task = verify_task_ownership(redis_client, task_id, user_id)
     if task is None:
         return None
-    return await _attach_execution_snapshot(task, training_client)
+    task = await _attach_execution_snapshot(task, training_client)
+    task["result_summary"] = _build_result_summary(task)
+    return task
 
 
 class QueueTaskRequest(BaseModel):
@@ -345,14 +370,21 @@ class QueueTaskRequest(BaseModel):
 
 class TaskDetailResponse(BaseModel):
     """Task detail response."""
-    task_id: str
-    task_type: str
-    status: str
-    user_id: str
-    created_at: str
-    progress: Optional[float] = None
-    result: Optional[dict] = None
-    error: Optional[str] = None
+    task: TaskRecordResponse
+
+
+def _build_result_summary(task: dict) -> Optional[dict]:
+    """Build a stable summary for synchronous business-owned task results."""
+    task = normalize_task_record(task)
+    if task.get("task_type") not in {"analysis", "report"}:
+        return None
+
+    result = task.get("result") or {}
+    return {
+        "status": task.get("registry_status"),
+        "content_preview": (result.get("content") or "")[:120] or None,
+        "file_count": len(result.get("files") or []),
+    }
 
 
 # ==================== Create Routers ====================
@@ -828,11 +860,37 @@ async def list_tasks(
     tasks = await asyncio.gather(*[
         _attach_execution_snapshot(task, training_client) for task in tasks
     ]) if tasks else []
+    tasks = [{**task, "result_summary": _build_result_summary(task)} for task in tasks]
 
     return TaskListResponse(
         tasks=tasks,
         total=len(tasks)
     )
+
+
+@train_router.get("/tasks/{task_id}", response_model=TaskDetailResponse)
+async def get_task_detail(
+    task_id: str,
+    request: Request,
+    current_user: CurrentUser = Depends(get_current_user),
+    _: None = Depends(check_rate_limit)
+):
+    """
+    Get a single task detail view.
+
+    Returns the normalized registry record plus any execution snapshot.
+    """
+    redis_client = get_redis_client(request)
+    training_client = request.app.state.training_client
+    task = await _get_aggregated_task(redis_client, training_client, task_id, current_user.user_id)
+
+    if task is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Task not found or not authorized"
+        )
+
+    return TaskDetailResponse(task=task)
 
 
 @train_router.delete("/tasks/{task_id}")

@@ -70,8 +70,9 @@ def test_submit_training_persists_device_and_batch():
     assert kwargs["device"] == "cuda:1"
 
     stored_payload = json.loads(mock_redis.set.call_args.args[1])
-    assert stored_payload["params"]["batch"] == 8
-    assert stored_payload["params"]["device"] == "cuda:1"
+    assert "params" not in stored_payload
+    assert stored_payload["submission"]["batch"] == 8
+    assert stored_payload["submission"]["device"] == "cuda:1"
 
 
 def test_adjust_training_updates_original_task_and_reuses_original_params():
@@ -199,6 +200,7 @@ def test_list_tasks_returns_registry_and_execution_views():
     assert task["execution"]["progress"] == 0.4
     assert task["execution_summary"]["status"] == "running"
     assert task["execution_summary"]["progress"] == 0.4
+    assert "params" not in task
 
 
 def test_export_status_uses_aggregated_execution_snapshot():
@@ -303,6 +305,7 @@ def test_analysis_task_uses_normalized_submission_schema():
     assert stored_payload["task_type"] == "analysis"
     assert stored_payload["submission"]["dataset_path"] == "/data/train.csv"
     assert stored_payload["registry_status"] == "completed"
+    assert "params" not in stored_payload
 
 
 def test_report_task_is_persisted_with_normalized_schema():
@@ -340,3 +343,105 @@ def test_report_task_is_persisted_with_normalized_schema():
     assert stored_payload["task_type"] == "report"
     assert stored_payload["submission"]["analysis_goals"] == ["trend"]
     assert stored_payload["registry_status"] == "completed"
+    assert "params" not in stored_payload
+
+
+def test_list_tasks_includes_result_summary_for_analysis_tasks():
+    mock_redis = Mock()
+    mock_redis.smembers.return_value = {"analyze_123"}
+    mock_redis.get.return_value = json.dumps({
+        "task_id": "analyze_123",
+        "task_type": "analysis",
+        "user_id": "test-user",
+        "registry_status": "completed",
+        "status": "completed",
+        "created_at": "2026-03-30T09:00:00",
+        "submission": {"dataset_path": "/data/train.csv", "analysis_type": "quality"},
+        "result": {"content": "quality report", "files": [{"name": "a.json"}]},
+    })
+    mock_training_client = Mock()
+
+    from src.api import gateway
+    from src.api import routes
+
+    gateway.app.dependency_overrides[routes.get_current_user] = _mock_current_user
+    gateway.app.dependency_overrides[routes.check_rate_limit] = lambda: None
+    try:
+        client = _build_client(mock_redis, mock_training_client)
+        response = client.get("/api/v1/train/tasks", headers=_auth_headers())
+    finally:
+        gateway.app.dependency_overrides.clear()
+
+    assert response.status_code == 200
+    task = response.json()["tasks"][0]
+    assert task["result_summary"]["status"] == "completed"
+    assert task["result_summary"]["file_count"] == 1
+    assert task["result_summary"]["content_preview"] == "quality report"
+
+
+def test_task_detail_returns_aggregated_training_task():
+    mock_redis = Mock()
+    mock_redis.get.return_value = json.dumps({
+        "task_id": "train_123",
+        "task_type": "training",
+        "user_id": "test-user",
+        "registry_status": "submitted",
+        "status": "submitted",
+        "created_at": "2026-03-30T09:00:00",
+        "submission": {"model": "yolo11n"},
+    })
+    mock_training_client = Mock()
+    mock_training_client.get_task_status = AsyncMock(return_value={
+        "task_id": "train_123",
+        "status": "running",
+        "progress": 0.4,
+    })
+
+    from src.api import gateway
+    from src.api import routes
+
+    gateway.app.dependency_overrides[routes.get_current_user] = _mock_current_user
+    gateway.app.dependency_overrides[routes.check_rate_limit] = lambda: None
+    try:
+        client = _build_client(mock_redis, mock_training_client)
+        response = client.get("/api/v1/train/tasks/train_123", headers=_auth_headers())
+    finally:
+        gateway.app.dependency_overrides.clear()
+
+    assert response.status_code == 200
+    task = response.json()["task"]
+    assert task["task_id"] == "train_123"
+    assert task["status"] == "running"
+    assert task["execution_summary"]["progress"] == 0.4
+
+
+def test_task_detail_returns_analysis_result_summary():
+    mock_redis = Mock()
+    mock_redis.get.return_value = json.dumps({
+        "task_id": "analyze_123",
+        "task_type": "analysis",
+        "user_id": "test-user",
+        "registry_status": "completed",
+        "status": "completed",
+        "created_at": "2026-03-30T09:00:00",
+        "submission": {"dataset_path": "/data/train.csv", "analysis_type": "quality"},
+        "result": {"content": "quality report", "files": [{"name": "a.json"}]},
+    })
+    mock_training_client = Mock()
+
+    from src.api import gateway
+    from src.api import routes
+
+    gateway.app.dependency_overrides[routes.get_current_user] = _mock_current_user
+    gateway.app.dependency_overrides[routes.check_rate_limit] = lambda: None
+    try:
+        client = _build_client(mock_redis, mock_training_client)
+        response = client.get("/api/v1/train/tasks/analyze_123", headers=_auth_headers())
+    finally:
+        gateway.app.dependency_overrides.clear()
+
+    assert response.status_code == 200
+    task = response.json()["task"]
+    assert task["task_type"] == "analysis"
+    assert task["result_summary"]["file_count"] == 1
+    assert task["result_summary"]["content_preview"] == "quality report"
