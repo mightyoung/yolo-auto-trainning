@@ -156,3 +156,43 @@ def test_business_status_exposes_resubmit_metadata():
     data = response.json()
     assert data["resubmit_count"] == 2
     assert data["resubmit_reason"] == "failed_task"
+
+
+def test_list_tasks_returns_registry_and_execution_views():
+    mock_redis = Mock()
+    mock_redis.smembers.return_value = {"train_123"}
+    mock_redis.get.return_value = json.dumps({
+        "task_id": "train_123",
+        "task_type": "training",
+        "user_id": "test-user",
+        "status": "submitted",
+        "created_at": "2026-03-30T09:00:00",
+        "params": {"model": "yolo11n", "data_yaml": "/data/test.yaml"},
+    })
+    mock_training_client = Mock()
+    mock_training_client.get_task_status = AsyncMock(return_value={
+        "task_id": "train_123",
+        "status": "running",
+        "progress": 0.4,
+    })
+
+    from src.api import gateway
+    from src.api import routes
+
+    gateway.app.dependency_overrides[routes.get_current_user] = _mock_current_user
+    gateway.app.dependency_overrides[routes.check_rate_limit] = lambda: None
+    try:
+        client = _build_client(mock_redis, mock_training_client)
+        response = client.get("/api/v1/train/tasks", headers=_auth_headers())
+    finally:
+        gateway.app.dependency_overrides.clear()
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["total"] == 1
+    task = payload["tasks"][0]
+    assert task["registry_status"] == "submitted"
+    assert task["status"] == "running"
+    assert task["submission"]["model"] == "yolo11n"
+    assert task["links"]["execution_task_id"] == "train_123"
+    assert task["execution"]["progress"] == 0.4

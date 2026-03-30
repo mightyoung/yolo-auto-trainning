@@ -31,11 +31,66 @@ def get_redis_client(request: Request):
     return request.app.state.redis
 
 
+def normalize_task_record(task_data: Optional[dict]) -> Optional[dict]:
+    """Normalize legacy task records into registry + execution-link shape."""
+    if task_data is None:
+        return None
+
+    normalized = dict(task_data)
+    task_type = normalized.get("task_type", "unknown")
+    submission = dict(normalized.get("submission") or normalized.get("params") or {})
+    links = dict(normalized.get("links") or {})
+
+    adjusted_from = submission.get("adjusted_from") or normalized.get("adjusted_from")
+    adjusted_to = normalized.get("adjusted_to")
+    if adjusted_from:
+        links.setdefault("adjusted_from", adjusted_from)
+    if adjusted_to:
+        links.setdefault("adjusted_to", adjusted_to)
+
+    if task_type in {"training", "export"}:
+        links.setdefault("execution_task_id", normalized.get("task_id"))
+
+    normalized["submission"] = submission
+    normalized["params"] = submission
+    normalized["links"] = links
+    normalized["registry_status"] = normalized.get("registry_status", normalized.get("status", "submitted"))
+    return normalized
+
+
+def build_task_record(
+    *,
+    task_id: str,
+    task_type: str,
+    user_id: str,
+    submission: dict,
+    registry_status: str = "submitted",
+    links: Optional[dict] = None,
+) -> dict:
+    """Build a business-side task registry record."""
+    record_links = dict(links or {})
+    if task_type in {"training", "export"}:
+        record_links.setdefault("execution_task_id", task_id)
+
+    return normalize_task_record({
+        "task_id": task_id,
+        "task_type": task_type,
+        "user_id": user_id,
+        "status": registry_status,
+        "registry_status": registry_status,
+        "created_at": datetime.now().isoformat(),
+        "submission": submission,
+        "params": submission,
+        "links": record_links,
+    })
+
+
 def store_task_in_redis(redis_client, task_data: dict) -> None:
     """Store task in Redis with user_id index."""
     if redis_client is None:
         return
 
+    task_data = normalize_task_record(task_data)
     task_id = task_data["task_id"]
     user_id = task_data["user_id"]
 
@@ -57,7 +112,7 @@ def get_task_from_redis(redis_client, task_id: str) -> Optional[dict]:
 
     data = redis_client.get(f"task:{task_id}")
     if data:
-        return json.loads(data)
+        return normalize_task_record(json.loads(data))
     return None
 
 
@@ -242,6 +297,24 @@ class TaskListResponse(BaseModel):
     total: int
 
 
+async def _attach_execution_snapshot(task: dict, training_client) -> dict:
+    """Attach execution status from Training API for execution-backed tasks."""
+    task = normalize_task_record(task)
+    execution_task_id = task.get("links", {}).get("execution_task_id")
+    if task.get("task_type") not in {"training", "export"} or not execution_task_id:
+        task["status"] = task.get("registry_status", task.get("status"))
+        return task
+
+    try:
+        execution = await training_client.get_task_status(execution_task_id)
+        task["execution"] = execution
+        task["status"] = execution.get("status", task.get("registry_status"))
+    except Exception:
+        task["status"] = task.get("registry_status", task.get("status"))
+
+    return task
+
+
 class QueueTaskRequest(BaseModel):
     """GPU task queue request."""
     data_yaml: str = Field(..., description="Path to dataset YAML")
@@ -412,13 +485,11 @@ async def submit_training(
         )
 
         # Store task in Redis with user_id for isolation
-        task_data = {
-            "task_id": task_id,
-            "task_type": "training",
-            "user_id": current_user.user_id,
-            "status": "submitted",
-            "created_at": datetime.now().isoformat(),
-            "params": {
+        task_data = build_task_record(
+            task_id=task_id,
+            task_type="training",
+            user_id=current_user.user_id,
+            submission={
                 "model": request.model,
                 "data_yaml": request.data_yaml,
                 "epochs": request.epochs,
@@ -426,8 +497,8 @@ async def submit_training(
                 "batch": request.batch,
                 "device": request.device,
                 "output_dir": f"/home/wangxin/runs/{task_id}",
-            }
-        }
+            },
+        )
         redis_client = get_redis_client(http_request)
         store_task_in_redis(redis_client, task_data)
 
@@ -658,13 +729,11 @@ async def adjust_training(
         )
 
         # Store new task in Redis
-        task_data = {
-            "task_id": new_task_id,
-            "task_type": "training",
-            "user_id": current_user.user_id,
-            "status": "submitted",
-            "created_at": datetime.now().isoformat(),
-            "params": {
+        task_data = build_task_record(
+            task_id=new_task_id,
+            task_type="training",
+            user_id=current_user.user_id,
+            submission={
                 "model": model,
                 "data_yaml": data_yaml,
                 "epochs": new_epochs,
@@ -676,16 +745,20 @@ async def adjust_training(
                 "lr0": new_lr0,
                 "augmentation_preset": augmentation_preset,
                 "resume_from": request.resume_from,
-            }
-        }
+            },
+            links={"adjusted_from": task_id},
+        )
         store_task_in_redis(redis_client, task_data)
 
         # Update original task status
+        task = normalize_task_record(task)
         task.update({
             "status": "adjusted",
+            "registry_status": "adjusted",
             "adjusted_to": new_task_id,
             "adjusted_at": datetime.now().isoformat(),
         })
+        task["links"]["adjusted_to"] = new_task_id
         redis_client.set(f"task:{task_id}", json.dumps(task), ex=7 * 24 * 60 * 60)
 
         # Log adjustment
@@ -736,6 +809,10 @@ async def list_tasks(
     """
     redis_client = get_redis_client(request)
     tasks = get_user_tasks_from_redis(redis_client, current_user.user_id)
+    training_client = request.app.state.training_client
+    tasks = await asyncio.gather(*[
+        _attach_execution_snapshot(task, training_client) for task in tasks
+    ]) if tasks else []
 
     return TaskListResponse(
         tasks=tasks,
@@ -959,18 +1036,16 @@ async def export_model(
         )
 
         # Store task in Redis with user_id for isolation
-        task_data = {
-            "task_id": task_id,
-            "task_type": "export",
-            "user_id": current_user.user_id,
-            "status": "submitted",
-            "created_at": datetime.now().isoformat(),
-            "params": {
+        task_data = build_task_record(
+            task_id=task_id,
+            task_type="export",
+            user_id=current_user.user_id,
+            submission={
                 "model_path": request.model_path,
                 "platform": request.platform,
                 "imgsz": request.imgsz
-            }
-        }
+            },
+        )
         redis_client = get_redis_client(http_request)
         store_task_in_redis(redis_client, task_data)
 
