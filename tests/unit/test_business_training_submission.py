@@ -196,6 +196,8 @@ def test_list_tasks_returns_registry_and_execution_views():
     assert task["submission"]["model"] == "yolo11n"
     assert task["links"]["execution_task_id"] == "train_123"
     assert task["execution"]["progress"] == 0.4
+    assert task["execution_summary"]["status"] == "running"
+    assert task["execution_summary"]["progress"] == 0.4
 
 
 def test_export_status_uses_aggregated_execution_snapshot():
@@ -230,3 +232,36 @@ def test_export_status_uses_aggregated_execution_snapshot():
     data = response.json()
     assert data["status"] == "completed"
     assert data["export_path"] == "/tmp/best.onnx"
+
+
+def test_list_tasks_falls_back_to_registry_summary_when_execution_unavailable():
+    mock_redis = Mock()
+    mock_redis.smembers.return_value = {"train_123"}
+    mock_redis.get.return_value = json.dumps({
+        "task_id": "train_123",
+        "task_type": "training",
+        "user_id": "test-user",
+        "registry_status": "submitted",
+        "status": "submitted",
+        "created_at": "2026-03-30T09:00:00",
+        "submission": {"model": "yolo11n"},
+    })
+    mock_training_client = Mock()
+    mock_training_client.get_task_status = AsyncMock(side_effect=RuntimeError("training api unavailable"))
+
+    from src.api import gateway
+    from src.api import routes
+
+    gateway.app.dependency_overrides[routes.get_current_user] = _mock_current_user
+    gateway.app.dependency_overrides[routes.check_rate_limit] = lambda: None
+    try:
+        client = _build_client(mock_redis, mock_training_client)
+        response = client.get("/api/v1/train/tasks", headers=_auth_headers())
+    finally:
+        gateway.app.dependency_overrides.clear()
+
+    assert response.status_code == 200
+    task = response.json()["tasks"][0]
+    assert task["status"] == "submitted"
+    assert task["execution_summary"]["status"] == "submitted"
+    assert task["execution_summary"]["progress"] is None

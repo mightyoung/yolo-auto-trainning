@@ -301,6 +301,11 @@ async def _attach_execution_snapshot(task: dict, training_client) -> dict:
     """Attach execution status from Training API for execution-backed tasks."""
     task = normalize_task_record(task)
     execution_task_id = task.get("links", {}).get("execution_task_id")
+    task["execution_summary"] = {
+        "status": task.get("registry_status", task.get("status")),
+        "progress": None,
+        "updated_at": task.get("updated_at") or task.get("created_at"),
+    }
     if task.get("task_type") not in {"training", "export"} or not execution_task_id:
         task["status"] = task.get("registry_status", task.get("status"))
         return task
@@ -309,6 +314,12 @@ async def _attach_execution_snapshot(task: dict, training_client) -> dict:
         execution = await training_client.get_task_status(execution_task_id)
         task["execution"] = execution
         task["status"] = execution.get("status", task.get("registry_status"))
+        task["execution_summary"] = {
+            "status": execution.get("status", task.get("registry_status")),
+            "progress": execution.get("progress"),
+            "updated_at": execution.get("completed_at") or execution.get("started_at") or task.get("updated_at") or task.get("created_at"),
+            "error": execution.get("error"),
+        }
     except Exception:
         task["status"] = task.get("registry_status", task.get("status"))
 
