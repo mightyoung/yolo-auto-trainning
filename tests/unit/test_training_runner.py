@@ -31,6 +31,8 @@ from training.runner import (
     YOLOTrainer,
     TransferLearningTrainer,
     TrainingResult,
+    PipelineCurriculumTrainer,
+    CurriculumStage,
 )
 from training.config import (
     TrainingConfig,
@@ -236,3 +238,99 @@ class TestConfigValidation:
         """SanityCheckConfig validates min_map threshold."""
         config = SanityCheckConfig(min_map50=0.4)
         assert config.min_map50 == 0.4
+
+
+class TestPipelineCurriculumTrainer:
+    """Regression tests for curriculum plateau handling."""
+
+    def test_run_stage_writes_plateau_signals_to_redis(self, temp_dir):
+        trainer = PipelineCurriculumTrainer(output_dir=temp_dir)
+        stage = CurriculumStage(
+            name="stage2",
+            epochs=10,
+            imgsz=640,
+            batch=16,
+            model="yolo11m",
+            augmentation_preset="strong",
+        )
+        redis_client = MagicMock()
+        plateau_manager = MagicMock()
+        plateau_manager.get_status.return_value = {
+            "lr_reduction_count": 1,
+            "augment_boost_active": True,
+            "signaled_expansion": True,
+            "in_stage_restarts": 2,
+            "strategies_triggered": [
+                {"action": "lr_decay", "adjustment": {"new_lr": 0.005}},
+                {"action": "augment_boost", "adjustment": {"mixup": 0.3}},
+                {"action": "data_expansion", "adjustment": {"target": 0.9}},
+            ],
+            "llm_diagnosis": {"root_cause": "small_dataset"},
+        }
+        plateau_manager.on_metric.return_value = MagicMock(triggered=False)
+        plateau_manager._in_stage_restarts = 0
+
+        train_result = TrainingResult(
+            status="completed",
+            model_path=temp_dir / "best.pt",
+            metrics={"mAP50": 0.6},
+        )
+        train_result.model_path.write_text("weights")
+
+        with patch.object(YOLOTrainer, "train", return_value=train_result) as mock_train:
+            trainer._run_stage(
+                stage=stage,
+                data_yaml=temp_dir / "data.yaml",
+                stage_num=2,
+                plateau_manager=plateau_manager,
+                redis_client=redis_client,
+                task_id_for_redis="task123",
+            )
+
+        epoch_callback = mock_train.call_args.kwargs["metric_callback"]
+        for epoch in range(1, 6):
+            epoch_callback(epoch, 10, {"mAP50": 0.5 + epoch * 0.01})
+
+        redis_client.hset.assert_called_once()
+        mapping = redis_client.hset.call_args.kwargs["mapping"]
+        assert mapping["lr_decay_triggered"] == "True"
+        assert mapping["lr_decay_signal"] == '{"new_lr": 0.005}'
+        assert mapping["augment_boost_signal"] == '{"mixup": 0.3}'
+        assert mapping["data_expansion_signal"] == '{"target": 0.9}'
+        assert mapping["llm_diagnosis"] == '{"root_cause": "small_dataset"}'
+
+    def test_run_stage_prefers_higher_map_over_checkpoint_size(self, temp_dir):
+        trainer = PipelineCurriculumTrainer(output_dir=temp_dir)
+        stage = CurriculumStage(
+            name="stage2",
+            epochs=10,
+            imgsz=640,
+            batch=16,
+            model="yolo11m",
+            augmentation_preset="strong",
+        )
+        resume_path = temp_dir / "resume.pt"
+        resume_path.write_text("x" * 5000)
+        better_path = temp_dir / "better.pt"
+        better_path.write_text("small")
+        plateau_manager = MagicMock()
+        plateau_manager.on_metric.return_value = MagicMock(triggered=False)
+        plateau_manager._in_stage_restarts = 0
+
+        train_result = TrainingResult(
+            status="completed",
+            model_path=better_path,
+            metrics={"mAP50": 0.72},
+        )
+
+        with patch.object(YOLOTrainer, "train", return_value=train_result):
+            result, _ = trainer._run_stage(
+                stage=stage,
+                data_yaml=temp_dir / "data.yaml",
+                stage_num=2,
+                resume_from=str(resume_path),
+                plateau_manager=plateau_manager,
+            )
+
+        assert result.model_path == better_path
+        plateau_manager.set_best_checkpoint_path.assert_called_once_with(str(better_path))

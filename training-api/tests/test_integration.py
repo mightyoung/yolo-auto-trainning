@@ -4,6 +4,7 @@
 import pytest
 import sys
 import os
+import json
 from pathlib import Path
 from unittest.mock import Mock, patch
 
@@ -152,6 +153,70 @@ class TestTrainingEndpoints:
         assert data["task_id"] == "status_001"
         assert "status" in data
         assert "progress" in data
+
+    def test_start_training_persists_resubmit_inputs(self, client, auth_headers):
+        """Persist enough config to safely auto-resubmit the same task."""
+        from src.api import routes as training_routes
+
+        task_id = "persist_001"
+        response = client.post(
+            "/api/v1/internal/train/start",
+            json={
+                "task_id": task_id,
+                "model": "yolo11x",
+                "data_yaml": "/data/coco.yaml",
+                "epochs": 50,
+                "imgsz": 1280,
+                "batch": 8,
+                "device": "cuda:1",
+                "output_dir": "/tmp/runs",
+                "resume_from": "/tmp/best.pt",
+            },
+            headers=auth_headers
+        )
+
+        assert response.status_code == 200
+        task = training_routes._task_get(task_id)
+        assert task["imgsz"] == 1280
+        assert task["batch"] == 8
+        assert task["device"] == "cuda:1"
+        assert task["output_dir"] == "/tmp/runs"
+        assert task["resume_from"] == "/tmp/best.pt"
+
+    def test_get_training_status_marks_auto_resubmits(self, client, auth_headers):
+        """Status should expose when a failed task was auto-resubmitted."""
+        from src.api import routes as training_routes
+
+        task_id = "resubmit_001"
+        training_routes._task_set(task_id, {
+            "task_id": task_id,
+            "type": "training",
+            "status": "failed",
+            "model": "yolo11n",
+            "data_yaml": "/data/coco.yaml",
+            "epochs": 10,
+            "imgsz": 640,
+            "batch": 16,
+            "output_dir": "/tmp/runs",
+            "device": "cuda:0",
+            "created_at": "2026-03-30T09:00:00",
+            "error": "OOM",
+        })
+
+        class FakeLoop:
+            def run_in_executor(self, executor, fn, *args):
+                return None
+
+        with patch("src.api.routes.get_redis_client", return_value=None), \
+             patch("src.api.routes.asyncio.get_event_loop", return_value=FakeLoop()), \
+             patch("src.api.routes.time.sleep", return_value=None):
+            response = client.get(f"/api/v1/internal/train/status/{task_id}", headers=auth_headers)
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["status"] == "running"
+        assert data["resubmit_count"] == 1
+        assert data["resubmit_reason"] == "failed_task"
 
     def test_get_training_status_not_found(self, client):
         """Test getting status for non-existent task."""

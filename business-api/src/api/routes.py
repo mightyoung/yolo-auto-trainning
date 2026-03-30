@@ -142,6 +142,7 @@ class TrainRequest(BaseModel):
     data_yaml: str = Field(..., description="Path to dataset YAML")
     epochs: int = Field(100, description="Number of epochs")
     imgsz: int = Field(640, description="Image size")
+    batch: int = Field(16, description="Batch size")
     task_type: str = Field("training", description="Task type: training/hpo")
     project: str = "/models/auto-detect"
 
@@ -185,6 +186,9 @@ class TrainStatusResponse(BaseModel):
     data_expansion_requested: Optional[bool] = None
     data_expansion_signal: Optional[dict] = None
     strategies_triggered: Optional[list] = None
+    resubmit_count: Optional[int] = None
+    last_resubmitted_at: Optional[str] = None
+    resubmit_reason: Optional[str] = None
 
 
 class ExportRequest(BaseModel):
@@ -403,7 +407,7 @@ async def submit_training(
             epochs=request.epochs,
             imgsz=request.imgsz,
             output_dir=f"/home/wangxin/runs/{task_id}",
-            batch=request.batch if hasattr(request, 'batch') and request.batch else 16,
+            batch=request.batch,
             device=request.device,
         )
 
@@ -418,7 +422,10 @@ async def submit_training(
                 "model": request.model,
                 "data_yaml": request.data_yaml,
                 "epochs": request.epochs,
-                "imgsz": request.imgsz
+                "imgsz": request.imgsz,
+                "batch": request.batch,
+                "device": request.device,
+                "output_dir": f"/home/wangxin/runs/{task_id}",
             }
         }
         redis_client = get_redis_client(http_request)
@@ -511,6 +518,9 @@ async def get_training_status(
             data_expansion_requested=result.get("data_expansion_requested"),
             data_expansion_signal=result.get("data_expansion_signal"),
             strategies_triggered=result.get("strategies_triggered"),
+            resubmit_count=result.get("resubmit_count"),
+            last_resubmitted_at=result.get("last_resubmitted_at"),
+            resubmit_reason=result.get("resubmit_reason"),
         )
 
     except Exception as e:
@@ -607,6 +617,7 @@ async def adjust_training(
         data_yaml = params.get("data_yaml", "")
         original_epochs = params.get("epochs", 100)
         imgsz = params.get("imgsz", 640)
+        batch = params.get("batch", 16)
         device = params.get("device", "cuda:0")
 
         # Cancel current training
@@ -640,7 +651,7 @@ async def adjust_training(
             epochs=new_epochs,
             imgsz=imgsz,
             output_dir=f"/home/wangxin/runs/{new_task_id}",
-            batch=16,
+            batch=batch,
             device=device,
             augmentation_preset=augmentation_preset,
             resume_from=request.resume_from,
@@ -658,6 +669,9 @@ async def adjust_training(
                 "data_yaml": data_yaml,
                 "epochs": new_epochs,
                 "imgsz": imgsz,
+                "batch": batch,
+                "device": device,
+                "output_dir": f"/home/wangxin/runs/{new_task_id}",
                 "adjusted_from": task_id,  # Link to original task
                 "lr0": new_lr0,
                 "augmentation_preset": augmentation_preset,
@@ -667,11 +681,12 @@ async def adjust_training(
         store_task_in_redis(redis_client, task_data)
 
         # Update original task status
-        redis_client.hset(f"task:{current_user.user_id}:{task_id}", mapping={
+        task.update({
             "status": "adjusted",
             "adjusted_to": new_task_id,
             "adjusted_at": datetime.now().isoformat(),
         })
+        redis_client.set(f"task:{task_id}", json.dumps(task), ex=7 * 24 * 60 * 60)
 
         # Log adjustment
         audit_logger.log_training(

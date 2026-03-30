@@ -1324,6 +1324,7 @@ class PipelineCurriculumTrainer:
 
         # Track best checkpoint across restarts within this stage
         best_checkpoint: Optional[Path] = None
+        best_checkpoint_map: Optional[float] = None
         if resume_from:
             best_checkpoint = Path(resume_from)
 
@@ -1358,13 +1359,23 @@ class PipelineCurriculumTrainer:
                 if redis_client is not None and _epoch_count[0] % 5 == 0:
                     try:
                         status = plateau_manager.get_status() if plateau_manager else {}
+                        strategies = status.get("strategies_triggered", [])
+                        latest_by_action = {}
+                        for strategy in strategies:
+                            action = strategy.get("action")
+                            if action:
+                                latest_by_action[action] = strategy.get("adjustment", {})
                         redis_mapping = {
                             "live_mAP50": str(metrics.get("mAP50", 0)),
                             "lr_decay_triggered": str(status.get("lr_reduction_count", 0) > 0),
+                            "lr_decay_signal": json.dumps(latest_by_action.get("lr_decay")),
                             "augment_boost_active": str(status.get("augment_boost_active", False)),
+                            "augment_boost_signal": json.dumps(latest_by_action.get("augment_boost")),
                             "data_expansion_requested": str(status.get("signaled_expansion", False)),
+                            "data_expansion_signal": json.dumps(latest_by_action.get("data_expansion")),
                             "in_stage_restarts": str(status.get("in_stage_restarts", 0)),
-                            "strategies_triggered": json.dumps(status.get("strategies_triggered", [])),
+                            "strategies_triggered": json.dumps(strategies),
+                            "llm_diagnosis": json.dumps(status.get("llm_diagnosis")),
                             "curriculum_stage_num": str(stage_num),
                         }
                         redis_client.hset(f"training:task:{task_id_for_redis}", mapping=redis_mapping)
@@ -1381,9 +1392,9 @@ class PipelineCurriculumTrainer:
             # Track best checkpoint
             if result.model_path and Path(result.model_path).exists():
                 result_map = result.metrics.get("mAP50", 0.0) if result.metrics else 0.0
-                best_map = best_checkpoint.stat().st_size if best_checkpoint and best_checkpoint.exists() else 0
-                if result_map > best_map:
+                if best_checkpoint_map is None or result_map > best_checkpoint_map:
                     best_checkpoint = Path(result.model_path)
+                    best_checkpoint_map = result_map
                     if plateau_manager:
                         plateau_manager.set_best_checkpoint_path(str(best_checkpoint))
 

@@ -1009,7 +1009,8 @@ class YOLOTrainingOrchestrator:
                     if status in ("completed", "success"):
                         auto_adjust_agent.stop()
                         model_path = status_data.get("model_path", "/home/wangxin/runs/train/weights/best.pt")
-                        project_name = data.get("project_name", task_id)
+                        agent_data = r.hgetall(f"agent:{task_id}")
+                        project_name = agent_data.get("project_name", task_id)
                         r.hset(f"agent:{task_id}", mapping={
                             "status": "training_completed",
                             "progress": "90.0",

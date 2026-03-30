@@ -87,6 +87,9 @@ class TrainStatusResponse(BaseModel):
     data_expansion_requested: Optional[bool] = None
     data_expansion_signal: Optional[dict] = None
     strategies_triggered: Optional[list] = None
+    resubmit_count: Optional[int] = None
+    last_resubmitted_at: Optional[str] = None
+    resubmit_reason: Optional[str] = None
     # Curriculum training fields (populated during progressive 3-stage training)
     curriculum_stage: Optional[str] = None
     curriculum_stage_num: Optional[int] = None
@@ -868,11 +871,16 @@ async def start_training(
         "model": request.model,
         "data_yaml": request.data_yaml,
         "epochs": request.epochs,
+        "imgsz": request.imgsz,
+        "batch": request.batch,
+        "output_dir": request.output_dir,
+        "device": request.device,
         "progress": 0.0,
         "current_epoch": 0,
         "total_epochs": request.epochs,
         "auto_export": request.auto_export,
         "augmentation_preset": request.augmentation_preset,
+        "resume_from": request.resume_from,
         "created_at": datetime.now().isoformat()
     })
 
@@ -1312,19 +1320,28 @@ async def get_training_status(
             if task_id not in _cancel_events:
                 _cancel_events[task_id] = threading.Event()
         # Update Redis + cache to running and restart background executor
+        reason = "failed_task" if candidate.get("status") == "failed" else "stuck_submitted"
+        resubmit_count = count + 1
+        resubmitted_at = datetime.now().isoformat()
         _task_set(task_id, {
             **candidate,
             "status": "running",
-            "started_at": datetime.now().isoformat(),
+            "started_at": resubmitted_at,
             "progress": 0.0,
             "current_epoch": 0,
             "error": None,
+            "resubmit_count": resubmit_count,
+            "last_resubmitted_at": resubmitted_at,
+            "resubmit_reason": reason,
         })
         task["status"] = "running"
-        task["started_at"] = datetime.now().isoformat()
+        task["started_at"] = resubmitted_at
         task["progress"] = 0.0
         task["current_epoch"] = 0
         task["error"] = None
+        task["resubmit_count"] = resubmit_count
+        task["last_resubmitted_at"] = resubmitted_at
+        task["resubmit_reason"] = reason
         # Fire the background thread using fresh Redis data
         loop = asyncio.get_event_loop()
         loop.run_in_executor(
@@ -1448,6 +1465,9 @@ async def get_training_status(
         data_expansion_requested=task.get("data_expansion_requested"),
         data_expansion_signal=task.get("data_expansion_signal"),
         strategies_triggered=task.get("strategies_triggered"),
+        resubmit_count=task.get("resubmit_count"),
+        last_resubmitted_at=task.get("last_resubmitted_at"),
+        resubmit_reason=task.get("resubmit_reason"),
         curriculum_stage=task.get("curriculum_stage"),
         curriculum_stage_num=task.get("curriculum_stage_num"),
         curriculum_stage_history=task.get("curriculum_stage_history"),
