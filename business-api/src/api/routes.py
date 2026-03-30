@@ -387,6 +387,34 @@ def _build_result_summary(task: dict) -> Optional[dict]:
     }
 
 
+def _build_training_status_response(task: dict) -> TrainStatusResponse:
+    """Map an aggregated training task into the public status response shape."""
+    task = normalize_task_record(task)
+    result = dict(task.get("execution") or {})
+    status_value = task.get("status", task.get("registry_status", "unknown"))
+
+    return TrainStatusResponse(
+        task_id=task.get("task_id", ""),
+        status=status_value,
+        progress=result.get("progress", 0.0),
+        current_epoch=result.get("current_epoch"),
+        total_epochs=result.get("total_epochs"),
+        metrics=result.get("metrics"),
+        error=result.get("error", task.get("error")),
+        live_mAP50=result.get("live_mAP50"),
+        lr_decay_triggered=result.get("lr_decay_triggered"),
+        lr_decay_signal=result.get("lr_decay_signal"),
+        augment_boost_active=result.get("augment_boost_active"),
+        augment_boost_signal=result.get("augment_boost_signal"),
+        data_expansion_requested=result.get("data_expansion_requested"),
+        data_expansion_signal=result.get("data_expansion_signal"),
+        strategies_triggered=result.get("strategies_triggered"),
+        resubmit_count=result.get("resubmit_count"),
+        last_resubmitted_at=result.get("last_resubmitted_at"),
+        resubmit_reason=result.get("resubmit_reason"),
+    )
+
+
 # ==================== Create Routers ====================
 
 data_router = APIRouter()
@@ -619,27 +647,7 @@ async def get_training_status(
             details={"status": task.get("status")}
         )
 
-        result = task.get("execution", {})
-        return TrainStatusResponse(
-            task_id=task.get("task_id", task_id),
-            status=task.get("status", task.get("registry_status", "unknown")),
-            progress=result.get("progress", 0.0),
-            current_epoch=result.get("current_epoch"),
-            total_epochs=result.get("total_epochs"),
-            metrics=result.get("metrics"),
-            error=result.get("error"),
-            live_mAP50=result.get("live_mAP50"),
-            lr_decay_triggered=result.get("lr_decay_triggered"),
-            lr_decay_signal=result.get("lr_decay_signal"),
-            augment_boost_active=result.get("augment_boost_active"),
-            augment_boost_signal=result.get("augment_boost_signal"),
-            data_expansion_requested=result.get("data_expansion_requested"),
-            data_expansion_signal=result.get("data_expansion_signal"),
-            strategies_triggered=result.get("strategies_triggered"),
-            resubmit_count=result.get("resubmit_count"),
-            last_resubmitted_at=result.get("last_resubmitted_at"),
-            resubmit_reason=result.get("resubmit_reason"),
-        )
+        return _build_training_status_response(task)
 
     except Exception as e:
         raise HTTPException(

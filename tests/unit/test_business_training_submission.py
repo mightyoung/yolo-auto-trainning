@@ -445,3 +445,99 @@ def test_task_detail_returns_analysis_result_summary():
     assert task["task_type"] == "analysis"
     assert task["result_summary"]["file_count"] == 1
     assert task["result_summary"]["content_preview"] == "quality report"
+
+
+def test_training_status_matches_task_detail_execution_snapshot():
+    mock_redis = Mock()
+    mock_redis.get.return_value = json.dumps({
+        "task_id": "train_123",
+        "task_type": "training",
+        "user_id": "test-user",
+        "registry_status": "submitted",
+        "status": "submitted",
+        "created_at": "2026-03-30T09:00:00",
+        "submission": {"model": "yolo11n"},
+    })
+    execution_snapshot = {
+        "task_id": "train_123",
+        "status": "running",
+        "progress": 0.75,
+        "current_epoch": 15,
+        "total_epochs": 20,
+        "metrics": {"mAP50": 0.63},
+        "live_mAP50": 0.63,
+        "lr_decay_triggered": True,
+        "lr_decay_signal": {"factor": 0.5},
+        "augment_boost_active": False,
+        "data_expansion_requested": True,
+        "data_expansion_signal": {"query": "hard cases"},
+        "strategies_triggered": ["lr_decay", "data_expansion"],
+        "resubmit_count": 1,
+        "last_resubmitted_at": "2026-03-30T10:00:00",
+        "resubmit_reason": "submitted_timeout",
+    }
+    mock_training_client = Mock()
+    mock_training_client.get_task_status = AsyncMock(return_value=execution_snapshot)
+
+    from src.api import gateway
+    from src.api import routes
+
+    gateway.app.dependency_overrides[routes.get_current_user] = _mock_current_user
+    gateway.app.dependency_overrides[routes.check_rate_limit] = lambda: None
+    try:
+        client = _build_client(mock_redis, mock_training_client)
+        status_response = client.get("/api/v1/train/status/train_123", headers=_auth_headers())
+        detail_response = client.get("/api/v1/train/tasks/train_123", headers=_auth_headers())
+    finally:
+        gateway.app.dependency_overrides.clear()
+
+    assert status_response.status_code == 200
+    assert detail_response.status_code == 200
+
+    status_payload = status_response.json()
+    task_payload = detail_response.json()["task"]
+    execution = task_payload["execution"]
+
+    assert status_payload["status"] == task_payload["status"] == execution["status"]
+    assert status_payload["progress"] == execution["progress"]
+    assert status_payload["current_epoch"] == execution["current_epoch"]
+    assert status_payload["total_epochs"] == execution["total_epochs"]
+    assert status_payload["metrics"] == execution["metrics"]
+    assert status_payload["live_mAP50"] == execution["live_mAP50"]
+    assert status_payload["lr_decay_signal"] == execution["lr_decay_signal"]
+    assert status_payload["data_expansion_signal"] == execution["data_expansion_signal"]
+    assert status_payload["strategies_triggered"] == execution["strategies_triggered"]
+    assert status_payload["resubmit_count"] == execution["resubmit_count"]
+    assert status_payload["resubmit_reason"] == execution["resubmit_reason"]
+
+
+def test_training_status_falls_back_to_registry_state_when_execution_unavailable():
+    mock_redis = Mock()
+    mock_redis.get.return_value = json.dumps({
+        "task_id": "train_123",
+        "task_type": "training",
+        "user_id": "test-user",
+        "registry_status": "submitted",
+        "status": "submitted",
+        "created_at": "2026-03-30T09:00:00",
+        "submission": {"model": "yolo11n"},
+    })
+    mock_training_client = Mock()
+    mock_training_client.get_task_status = AsyncMock(side_effect=RuntimeError("training api unavailable"))
+
+    from src.api import gateway
+    from src.api import routes
+
+    gateway.app.dependency_overrides[routes.get_current_user] = _mock_current_user
+    gateway.app.dependency_overrides[routes.check_rate_limit] = lambda: None
+    try:
+        client = _build_client(mock_redis, mock_training_client)
+        response = client.get("/api/v1/train/status/train_123", headers=_auth_headers())
+    finally:
+        gateway.app.dependency_overrides.clear()
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["status"] == "submitted"
+    assert payload["progress"] == 0.0
+    assert payload["error"] is None
