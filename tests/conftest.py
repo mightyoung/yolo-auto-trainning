@@ -22,25 +22,40 @@ _original_sys_path = sys.path.copy()
 
 
 def _restore_sys_path():
-    """Restore sys.path and clear cached modules from training-api."""
+    """Restore sys.path and clear cached modules from training-api and business-api."""
     sys.path[:] = _original_sys_path.copy()
 
-    # Clear all modules from training-api to prevent path pollution
+    # Clear all modules from training-api and business-api to prevent path pollution
     modules_to_remove = []
     for mod_name in list(sys.modules.keys()):
         mod = sys.modules.get(mod_name)
         if mod and hasattr(mod, '__file__') and mod.__file__:
-            if 'training-api' in mod.__file__:
+            if 'training-api' in mod.__file__ or 'business-api' in mod.__file__:
                 modules_to_remove.append(mod_name)
-        # Also clear 'src' if it was cached to training-api path
-        if mod_name == 'src':
+        # Also clear 'src' and its submodules if cached to training-api or business-api path
+        if mod_name == 'src' or mod_name.startswith('src.'):
             if mod and hasattr(mod, '__file__') and mod.__file__:
-                if 'training-api' in mod.__file__:
+                if 'training-api' in mod.__file__ or 'business-api' in mod.__file__:
                     modules_to_remove.append(mod_name)
 
     for mod_name in modules_to_remove:
         if mod_name in sys.modules:
             del sys.modules[mod_name]
+
+    # If src.data was removed (e.g., by business-api test setup), re-import it
+    # from the project root's src directory
+    if 'src.data' not in sys.modules:
+        project_root = Path(__file__).parent.parent
+        src_data_path = project_root / "src" / "data"
+        if src_data_path.exists():
+            import importlib.util
+            spec = importlib.util.spec_from_file_location(
+                "src.data", src_data_path / "__init__.py"
+            )
+            if spec and spec.loader:
+                src_data_module = importlib.util.module_from_spec(spec)
+                sys.modules['src.data'] = src_data_module
+                spec.loader.exec_module(src_data_module)
 
 
 def pytest_runtest_setup(item):
@@ -51,12 +66,6 @@ def pytest_runtest_setup(item):
 def pytest_collect_file(file_path, parent):
     """Restore sys.path and clear modules before collecting each test file."""
     _restore_sys_path()
-
-    # Also clear training.* modules to ensure clean import state
-    for mod_name in list(sys.modules.keys()):
-        if mod_name.startswith('training.') or mod_name == 'training':
-            if mod_name in sys.modules:
-                del sys.modules[mod_name]
 
 
 # ==================== Fixtures ====================

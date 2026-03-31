@@ -12,34 +12,6 @@ mock_yolo_class = Mock()
 mock_ultralytics.YOLO = mock_yolo_class
 sys.modules['ultralytics'] = mock_ultralytics
 
-# Training API path setup
-test_dir = Path(__file__).parent
-project_root = test_dir.parent.parent
-training_api_path = project_root / "training-api"
-training_api_src_path = training_api_path / "src"
-
-# Insert training-api paths at front for imports
-for p in list(sys.path):
-    if 'training-api' in p:
-        sys.path.remove(p)
-sys.path.insert(0, str(training_api_src_path))
-sys.path.insert(0, str(training_api_path))
-
-from training.runner import (
-    YOLOTrainer,
-    TransferLearningTrainer,
-    TrainingResult,
-    PipelineCurriculumTrainer,
-    CurriculumStage,
-)
-
-from training.config import (
-    TrainingConfig,
-    SanityCheckConfig,
-    HPOConfig,
-    ExportConfig,
-)
-
 
 # ==================== Fixtures ====================
 
@@ -48,6 +20,83 @@ def reset_mock():
     """Reset mock before each test."""
     mock_yolo_class.reset_mock()
     yield
+
+
+# Cache for lazily-loaded training API imports
+_training_api_imports = {}
+
+
+@pytest.fixture(autouse=True)
+def setup_training_api_imports():
+    """Set up training-api paths and imports for tests that need them.
+
+    This runs BEFORE each test, ensuring sys.path is modified only during
+    test execution (not during pytest collection phase).
+    """
+    global _training_api_imports
+
+    # If already imported, just set in globals and yield
+    if _training_api_imports:
+        globals().update(_training_api_imports)
+        yield _training_api_imports
+        return
+
+    # Training API path setup - only during test execution
+    project_root = Path(__file__).parent.parent.parent
+    training_api_path = project_root / "training-api"
+    training_api_src_path = training_api_path / "src"
+
+    # Save original sys.path
+    original_sys_path = sys.path.copy()
+
+    # Insert training-api paths at front for imports
+    for p in list(sys.path):
+        if 'training-api' in p:
+            sys.path.remove(p)
+    sys.path.insert(0, str(training_api_src_path))
+    sys.path.insert(0, str(training_api_path))
+
+    # Clear any cached 'training' modules from sys.modules to avoid
+    # conflicts with src/training that may have been loaded by other tests
+    modules_to_remove = [k for k in sys.modules.keys()
+                         if k == 'training' or k.startswith('training.')]
+    for mod in modules_to_remove:
+        del sys.modules[mod]
+
+    # Import the modules
+    from training.runner import (
+        YOLOTrainer,
+        TransferLearningTrainer,
+        TrainingResult,
+        PipelineCurriculumTrainer,
+        CurriculumStage,
+    )
+    from training.config import (
+        TrainingConfig,
+        SanityCheckConfig,
+        HPOConfig,
+        ExportConfig,
+    )
+
+    _training_api_imports = {
+        'YOLOTrainer': YOLOTrainer,
+        'TransferLearningTrainer': TransferLearningTrainer,
+        'TrainingResult': TrainingResult,
+        'PipelineCurriculumTrainer': PipelineCurriculumTrainer,
+        'CurriculumStage': CurriculumStage,
+        'TrainingConfig': TrainingConfig,
+        'SanityCheckConfig': SanityCheckConfig,
+        'HPOConfig': HPOConfig,
+        'ExportConfig': ExportConfig,
+    }
+
+    # Set in module globals so tests can access them directly
+    globals().update(_training_api_imports)
+
+    yield _training_api_imports
+
+    # Restore sys.path after test
+    sys.path[:] = original_sys_path
 
 
 # ==================== Test TrainingResult ====================
