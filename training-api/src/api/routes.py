@@ -86,6 +86,13 @@ from .store.task_store import (
     _cancel_lock,
 )
 
+# Import training services from services package
+from .services import (
+    DynamicTrainingManager,
+    _run_training_sync,
+    _run_curriculum_sync,
+)
+
 
 # ==================== Dynamic Training Manager ====================
 
