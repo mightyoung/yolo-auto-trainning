@@ -10,9 +10,14 @@ project_root = Path(__file__).parent.parent.parent
 biz_api_src = project_root / "business-api" / "src"
 src_path = project_root / "src"
 
-for p in [str(biz_api_src), str(src_path)]:
-    if p not in sys.path:
-        sys.path.insert(0, p)
+# Insert business-api/src BEFORE src/ so that business-api's modules are found first
+# (src/agents/orchestration.py is deprecated and imports crewai directly,
+# while business-api/src/agents/orchestration.py has lazy imports)
+# Since insert(0) puts new items at the FRONT, we must insert src_path FIRST
+if str(src_path) not in sys.path:
+    sys.path.insert(0, str(src_path))  # src at [0]
+if str(biz_api_src) not in sys.path:
+    sys.path.insert(0, str(biz_api_src))  # biz_api_src at [0], src at [1]
 
 
 # ==================== Mock fixtures ====================

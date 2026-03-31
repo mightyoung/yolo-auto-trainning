@@ -43,8 +43,8 @@ def _try_import_crewai():
         return False
 
 # Import real modules
-_project_root = Path(__file__).parent.parent.parent
-_biz_api_root = Path(__file__).parent.parent  # business-api/
+_project_root = Path(__file__).parent.parent.parent.parent  # project root (contains src/)
+_biz_api_root = Path(__file__).parent.parent  # business-api/src/
 if str(_project_root) not in sys.path:
     sys.path.insert(0, str(_project_root))
 if str(_biz_api_root) not in sys.path:
