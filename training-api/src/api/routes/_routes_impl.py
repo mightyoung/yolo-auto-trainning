@@ -19,13 +19,20 @@ Migration plan:
 - routes/route_modules - Route handlers (TODO)
 """
 
-import os
-import sys
 import asyncio
+import json
 import logging
-import threading
+import os
 import subprocess
+import sys
+import threading
+import uuid
+from datetime import datetime
 from pathlib import Path
+from typing import Any, Dict, List, Optional
+
+from fastapi import APIRouter, BackgroundTasks, Depends, Header, HTTPException, Request, status
+from pydantic import BaseModel, Field
 
 # Add training-api/src to sys.path so 'src' package resolves here (not legacy src/)
 # This prevents legacy /home/wangxin/yolo-auto-training/src/ from shadowing training-api/src/
@@ -35,16 +42,6 @@ from pathlib import Path
 _training_api_src_root = Path(__file__).parent.parent  # = training-api/src/
 if str(_training_api_src_root) not in sys.path:
     sys.path.insert(0, str(_training_api_src_root))
-
-import json
-import os
-import uuid
-import time
-from datetime import datetime
-from typing import Optional, List, Dict, Any
-
-from fastapi import APIRouter, HTTPException, Header, status, BackgroundTasks, Depends, Request
-from pydantic import BaseModel, Field
 
 # Import verify_internal_api_key from gateway for timing-safe comparison
 # Use relative import since gateway is in the parent package (api/)

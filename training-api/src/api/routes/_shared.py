@@ -13,20 +13,19 @@ These are kept in a shared module because:
 3. They are not reusable business logic -- specific to this API's task model
 """
 
-import os
-import sys
 import asyncio
-import logging
-import threading
-import subprocess
 import json
-import uuid
+import logging
+import subprocess
+import sys
+import threading
 import time
-from pathlib import Path
+import uuid
 from datetime import datetime
-from typing import Optional, List, Dict, Any
+from pathlib import Path
+from typing import Any, Dict, List, Optional
 
-from fastapi import APIRouter, HTTPException, Header, status, BackgroundTasks, Depends, Request
+from fastapi import APIRouter, BackgroundTasks, Depends, Header, HTTPException, Request, status
 from pydantic import BaseModel, Field
 
 # Add training-api/src to sys.path so 'src' package resolves here (not legacy src/)
