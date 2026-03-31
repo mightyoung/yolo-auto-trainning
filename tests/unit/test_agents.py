@@ -5,6 +5,14 @@ from unittest.mock import Mock, patch, MagicMock
 from pathlib import Path
 import sys
 
+# Skip all tests if crewai is not installed
+try:
+    import crewai  # noqa: F401
+    _crewai_available = True
+except ImportError:
+    _crewai_available = False
+    pytestmark = pytest.mark.skip(reason="crewai not installed")
+
 # Add project paths so "agents.orchestration" resolves (business-api uses hyphen, not underscore)
 project_root = Path(__file__).parent.parent.parent
 biz_api_src = project_root / "business-api" / "src"

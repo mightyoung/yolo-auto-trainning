@@ -10,22 +10,26 @@ import pytest
 from pathlib import Path
 from unittest.mock import Mock, patch, MagicMock
 
+# Skip all tests if mlflow is not installed
+try:
+    import mlflow  # noqa: F401
+    _mlflow_available = True
+except ImportError:
+    _mlflow_available = False
+    pytestmark = pytest.mark.skip(reason="mlflow not installed")
+
 
 class TestMLflowTracker:
     """Test MLflowTracker class."""
 
+    @pytest.mark.skipif(not _mlflow_available, reason="mlflow not installed")
     def test_initialization(self):
         """Test MLflowTracker initialization."""
-        with patch('src.training.mlflow_tracker.mlflow') as mock_mlflow:
-            mock_mlflow.get_experiment_by_name.return_value = None
-            mock_mlflow.create_experiment.return_value = "test_experiment_id"
+        from src.training.mlflow_tracker import MLflowTracker
+        tracker = MLflowTracker(experiment_name="test")
+        assert tracker is not None
 
-            # This will fail due to import issues, but tests the concept
-            from src.training.mlflow_tracker import MLflowTracker
-
-            # Skip if mlflow not installed
-            pytest.skip("MLflow installation required")
-
+    @pytest.mark.skipif(not _mlflow_available, reason="mlflow not installed")
     def test_flatten_dict(self):
         """Test dictionary flattening utility."""
         from src.training.mlflow_tracker import MLflowTracker

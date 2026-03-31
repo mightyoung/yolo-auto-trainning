@@ -15,7 +15,12 @@ if str(project_root) not in sys.path:
     sys.path.insert(0, str(project_root))
 
 # Skip if dependencies not available
-pytestmark = pytest.mark.integration
+try:
+    import celery  # noqa: F401
+except ImportError:
+    pytestmark = pytest.mark.skip(reason="celery not installed")
+else:
+    pytestmark = pytest.mark.integration
 
 
 # ==================== Test Health Endpoint ====================
