@@ -86,12 +86,9 @@ from .store.task_store import (
     _cancel_lock,
 )
 
-# Import training services from services package
-from .services import (
-    DynamicTrainingManager,
-    _run_training_sync,
-    _run_curriculum_sync,
-)
+# Note: DynamicTrainingManager and _run_training_sync are defined below.
+# The services package (services/training_service.py) contains simplified versions
+# for potential future extraction. The implementations below are the canonical ones.
 
 
 # ==================== Dynamic Training Manager ====================
