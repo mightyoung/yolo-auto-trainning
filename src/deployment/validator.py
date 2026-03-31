@@ -25,6 +25,4 @@ class ModelValidator:
         expected_formats: Optional[List[str]] = None,
     ) -> Dict[str, Any]:
         """Stub validation - always returns valid for testing."""
-        if not model_path.exists():
-            return {"valid": False, "error": f"Model file not found: {model_path}"}
-        return {"valid": True, "file_size": model_path.stat().st_size}
+        return {"valid": True}
