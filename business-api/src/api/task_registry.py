@@ -16,6 +16,115 @@ TASK_TTL_SECONDS = 7 * 24 * 60 * 60
 CURRENT_SCHEMA_VERSION = "v1"
 
 
+# ==================== Task State Machine ====================
+# Valid task statuses
+TASK_STATUSES = frozenset([
+    "submitted",
+    "running",
+    "awaiting_confirmation",
+    "awaiting_training_confirmation",
+    "downloading_dataset",
+    "completed",
+    "failed",
+    "cancelled",
+])
+
+# Valid state transitions: current_status -> set of allowed next statuses
+# Based on the actual workflow: submitted -> running -> completed/failed/cancelled
+# or: submitted -> awaiting_confirmation -> running -> completed/failed/cancelled
+VALID_TRANSITIONS: dict[str, frozenset] = {
+    # Initial states
+    "submitted": frozenset(["running", "awaiting_confirmation", "awaiting_training_confirmation", "downloading_dataset", "failed"]),
+    # Running states
+    "running": frozenset(["completed", "failed", "cancelled"]),
+    "downloading_dataset": frozenset(["running", "awaiting_training_confirmation", "failed"]),
+    "awaiting_training_confirmation": frozenset(["running", "cancelled"]),
+    "awaiting_confirmation": frozenset(["running", "cancelled"]),
+    # Terminal states (no outgoing transitions)
+    "completed": frozenset(),
+    "failed": frozenset(),
+    "cancelled": frozenset(),
+}
+
+
+class InvalidTransitionError(Exception):
+    """Raised when an invalid state transition is attempted."""
+
+    def __init__(self, task_id: str, current_status: str, target_status: str):
+        self.task_id = task_id
+        self.current_status = current_status
+        self.target_status = target_status
+        allowed = VALID_TRANSITIONS.get(current_status, frozenset())
+        super().__init__(
+            f"Task {task_id}: invalid transition {current_status} -> {target_status}. "
+            f"Allowed transitions: {set(allowed) if allowed else 'none (terminal state)'}"
+        )
+
+
+def validate_transition(current_status: str, target_status: str) -> bool:
+    """Validate a status transition.
+
+    Args:
+        current_status: The current status of the task
+        target_status: The target status to transition to
+
+    Returns:
+        True if the transition is valid
+
+    Raises:
+        InvalidTransitionError: If the transition is not valid
+    """
+    # Normalize status values
+    current = current_status.lower() if current_status else ""
+    target = target_status.lower() if target_status else ""
+
+    # Allow same-state transitions (no-op)
+    if current == target:
+        return True
+
+    # Check if current status is valid
+    if current not in TASK_STATUSES:
+        # Unknown current status - allow transition but log warning
+        return True
+
+    # Check if target status is valid
+    if target not in TASK_STATUSES:
+        raise InvalidTransitionError("", current, target)
+
+    # Check if transition is allowed
+    allowed = VALID_TRANSITIONS.get(current, frozenset())
+    if target not in allowed:
+        raise InvalidTransitionError("", current, target)
+
+    return True
+
+
+def assert_transition(task_id: str, current_status: str, target_status: str) -> None:
+    """Assert that a status transition is valid, raising an exception if not.
+
+    Args:
+        task_id: The task ID (for error messages)
+        current_status: The current status of the task
+        target_status: The target status to transition to
+
+    Raises:
+        InvalidTransitionError: If the transition is not valid
+    """
+    validate_transition(current_status, target_status)
+
+
+def get_allowed_transitions(current_status: str) -> frozenset:
+    """Get the set of allowed transitions from the current status.
+
+    Args:
+        current_status: The current status of the task
+
+    Returns:
+        Frozenset of allowed target statuses
+    """
+    return VALID_TRANSITIONS.get(current_status.lower() if current_status else "", frozenset())
+
+
 def migrate_task_record(task_data: dict) -> dict:
     """Migrate a task record to the current schema version.
 

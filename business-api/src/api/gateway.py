@@ -34,35 +34,70 @@ except ImportError:
     JWT_AVAILABLE = False
 
 
-# Security - re-export from auth module
-API_KEY_HEADER = APIKeyHeader(name="X-API-Key", auto_error=False)
-BEARER_TOKEN = HTTPBearer(auto_error=False)
+# ==================== Runtime Settings ====================
+# These are read at runtime, not at import time
 
-# JWT settings
-JWT_SECRET_KEY = os.getenv("JWT_SECRET_KEY")
-JWT_ALGORITHM = "HS256"
-ACCESS_TOKEN_EXPIRE_MINUTES = 30
+class RuntimeSettings:
+    """Runtime settings that read from environment on each access.
 
-# API Key settings for service-to-service authentication
-BUSINESS_API_KEY = os.getenv("BUSINESS_API_KEY", "default-business-api-key")
+    This avoids the "module-level snapshot" problem where config values
+    are frozen at import time instead of being read at request time.
+    """
 
-# Redis settings
-REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379/0")
-REDIS_PASSWORD = os.getenv("REDIS_PASSWORD")
+    # JWT settings
+    @property
+    def JWT_SECRET_KEY(self) -> str:
+        return os.getenv("JWT_SECRET_KEY", "")
 
-# Training API settings - must be set in environment
-TRAINING_API_URL = os.getenv("TRAINING_API_URL")
-TRAINING_API_KEY = os.getenv("TRAINING_API_KEY")
+    @property
+    def JWT_ALGORITHM(self) -> str:
+        return "HS256"
+
+    @property
+    def ACCESS_TOKEN_EXPIRE_MINUTES(self) -> int:
+        return 30
+
+    # API Key settings
+    @property
+    def BUSINESS_API_KEY(self) -> str:
+        return os.getenv("BUSINESS_API_KEY", "default-business-api-key")
+
+    # Redis settings
+    @property
+    def REDIS_URL(self) -> str:
+        return os.getenv("REDIS_URL", "redis://localhost:6379/0")
+
+    @property
+    def REDIS_PASSWORD(self) -> Optional[str]:
+        return os.getenv("REDIS_PASSWORD")
+
+    # Training API settings
+    @property
+    def TRAINING_API_URL(self) -> Optional[str]:
+        return os.getenv("TRAINING_API_URL")
+
+    @property
+    def TRAINING_API_KEY(self) -> Optional[str]:
+        return os.getenv("TRAINING_API_KEY")
+
+    # CORS
+    @property
+    def ALLOWED_ORIGINS(self) -> list:
+        return os.getenv("ALLOWED_ORIGINS", "http://localhost:3000").split(",")
+
+
+# Global settings instance
+settings = RuntimeSettings()
 
 
 def _validate_startup_config():
     """Validate required configuration when the app actually starts."""
     missing = []
-    if not JWT_SECRET_KEY:
+    if not settings.JWT_SECRET_KEY:
         missing.append("JWT_SECRET_KEY")
-    if not TRAINING_API_URL:
+    if not settings.TRAINING_API_URL:
         missing.append("TRAINING_API_URL")
-    if not TRAINING_API_KEY:
+    if not settings.TRAINING_API_KEY:
         missing.append("TRAINING_API_KEY")
     if missing:
         raise RuntimeError(
@@ -80,8 +115,8 @@ def get_redis_client():
     try:
         if _redis_pool is None:
             _redis_pool = redis.ConnectionPool.from_url(
-                REDIS_URL,
-                password=REDIS_PASSWORD,
+                settings.REDIS_URL,
+                password=settings.REDIS_PASSWORD,
                 decode_responses=True,
                 max_connections=20
             )
@@ -100,8 +135,8 @@ async def lifespan(app: FastAPI):
     # Import and initialize training client
     from .training_client import TrainingAPIClient
     app.state.training_client = TrainingAPIClient(
-        base_url=TRAINING_API_URL,
-        api_key=TRAINING_API_KEY
+        base_url=settings.TRAINING_API_URL,
+        api_key=settings.TRAINING_API_KEY
     )
 
     yield
@@ -124,10 +159,9 @@ app = FastAPI(
 )
 
 # CORS middleware
-ALLOWED_ORIGINS = os.getenv("ALLOWED_ORIGINS", "http://localhost:3000").split(",")
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=ALLOWED_ORIGINS,
+    allow_origins=settings.ALLOWED_ORIGINS,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

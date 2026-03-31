@@ -1,26 +1,34 @@
 # Integration Tests - API Routes
 
+import os
 import pytest
 from pathlib import Path
 import sys
-from unittest.mock import Mock, patch
+from unittest.mock import Mock, patch, MagicMock
 
 # Add src to path - handle both direct and package execution
 test_dir = Path(__file__).parent
 project_root = test_dir.parent.parent
 src_path = project_root / "src"
+business_api_path = project_root / "business-api"
 if str(src_path) not in sys.path:
     sys.path.insert(0, str(src_path))
+if str(business_api_path) not in sys.path:
+    sys.path.insert(0, str(business_api_path))
 if str(project_root) not in sys.path:
     sys.path.insert(0, str(project_root))
 
-# Skip if dependencies not available
-try:
-    import celery  # noqa: F401
-except ImportError:
-    pytestmark = pytest.mark.skip(reason="celery not installed")
-else:
-    pytestmark = pytest.mark.integration
+# Set required environment variables BEFORE importing gateway
+os.environ.setdefault("JWT_SECRET_KEY", "test-secret-key-for-testing-only")
+os.environ.setdefault("TRAINING_API_URL", "http://localhost:8001")
+os.environ.setdefault("TRAINING_API_KEY", "test-api-key")
+os.environ.setdefault("REDIS_URL", "redis://localhost:6379/0")
+
+# Mock dependencies that may not be installed
+sys.modules['redis'] = MagicMock()
+sys.modules['celery'] = MagicMock()
+
+pytestmark = pytest.mark.integration
 
 
 # ==================== Test Health Endpoint ====================

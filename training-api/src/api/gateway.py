@@ -29,27 +29,50 @@ except ImportError:
     JWT_AVAILABLE = False
 
 
-# Security
-API_KEY_HEADER = "X-API-Key"
+# ==================== Runtime Settings ====================
+# These are read at runtime, not at import time
 
-# JWT settings
-JWT_SECRET_KEY = os.getenv("JWT_SECRET_KEY")
-JWT_ALGORITHM = "HS256"
+class RuntimeSettings:
+    """Runtime settings that read from environment on each access.
 
-# Redis settings
-REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379/0")
-REDIS_PASSWORD = os.getenv("REDIS_PASSWORD")
+    This avoids the "module-level snapshot" problem where config values
+    are frozen at import time instead of being read at request time.
+    """
 
-# Internal API Key - must be set in environment
-INTERNAL_API_KEY = os.getenv("INTERNAL_API_KEY")
+    # JWT settings
+    @property
+    def JWT_SECRET_KEY(self) -> str:
+        return os.getenv("JWT_SECRET_KEY", "")
+
+    @property
+    def JWT_ALGORITHM(self) -> str:
+        return "HS256"
+
+    # Redis settings
+    @property
+    def REDIS_URL(self) -> str:
+        return os.getenv("REDIS_URL", "redis://localhost:6379/0")
+
+    @property
+    def REDIS_PASSWORD(self) -> Optional[str]:
+        return os.getenv("REDIS_PASSWORD")
+
+    # Internal API Key - must be set in environment
+    @property
+    def INTERNAL_API_KEY(self) -> Optional[str]:
+        return os.getenv("INTERNAL_API_KEY")
+
+
+# Global settings instance
+settings = RuntimeSettings()
 
 
 def _validate_startup_config():
     """Validate required configuration when the app actually starts."""
     missing = []
-    if not JWT_SECRET_KEY:
+    if not settings.JWT_SECRET_KEY:
         missing.append("JWT_SECRET_KEY")
-    if not INTERNAL_API_KEY:
+    if not settings.INTERNAL_API_KEY:
         missing.append("INTERNAL_API_KEY")
     if missing:
         raise RuntimeError(
@@ -63,17 +86,17 @@ def get_redis_client():
     if os.getenv("DISABLE_REDIS", "").lower() in ("1", "true", "yes"):
         return None
     try:
-        return redis.from_url(REDIS_URL, password=REDIS_PASSWORD, decode_responses=True)
+        return redis.from_url(settings.REDIS_URL, password=settings.REDIS_PASSWORD, decode_responses=True)
     except Exception:
         return None
 
 
 def verify_internal_api_key(api_key: str = None):
     """Verify internal API key using constant-time comparison to prevent timing attacks."""
-    if api_key is None or not INTERNAL_API_KEY:
+    if api_key is None or not settings.INTERNAL_API_KEY:
         return False
     # Use constant-time comparison to prevent timing attacks
-    return secrets.compare_digest(api_key, INTERNAL_API_KEY)
+    return secrets.compare_digest(api_key, settings.INTERNAL_API_KEY)
 
 
 # Rate limiter dependency for internal API (API-key based)
