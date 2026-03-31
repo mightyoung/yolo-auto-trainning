@@ -5,7 +5,7 @@ from unittest.mock import Mock, patch, MagicMock
 from pathlib import Path
 import sys
 
-# Add project paths so "business_api.src.agents.orchestration" resolves
+# Add project paths so "agents.orchestration" resolves (business-api uses hyphen, not underscore)
 project_root = Path(__file__).parent.parent.parent
 biz_api_src = project_root / "business-api" / "src"
 src_path = project_root / "src"
@@ -31,19 +31,19 @@ class TestDatasetSearchTool:
     """Test DatasetSearchTool."""
 
     def test_tool_has_correct_name(self):
-        from business_api.src.agents.orchestration import DatasetSearchTool
+        from agents.orchestration import DatasetSearchTool
         tool = DatasetSearchTool()
         assert tool.name == "dataset_search"
 
     def test_tool_has_correct_description(self):
-        from business_api.src.agents.orchestration import DatasetSearchTool
+        from agents.orchestration import DatasetSearchTool
         tool = DatasetSearchTool()
         assert "Roboflow" in tool.description
         assert "Kaggle" in tool.description
 
     def test_tool_run_returns_no_results_message(self):
-        from business_api.src.agents.orchestration import DatasetSearchTool
-        with patch("business_api.src.agents.orchestration.DatasetDiscovery") as MockDiscovery:
+        from agents.orchestration import DatasetSearchTool
+        with patch("agents.orchestration.DatasetDiscovery") as MockDiscovery:
             mock_instance = Mock()
             mock_instance.search.return_value = []
             MockDiscovery.return_value = mock_instance
@@ -53,9 +53,9 @@ class TestDatasetSearchTool:
             assert "No datasets found" in result
 
     def test_tool_run_with_results(self):
-        from business_api.src.agents.orchestration import DatasetSearchTool
-        from business_api.src.data.discovery import DatasetInfo
-        with patch("business_api.src.agents.orchestration.DatasetDiscovery") as MockDiscovery:
+        from agents.orchestration import DatasetSearchTool
+        from data.discovery import DatasetInfo
+        with patch("agents.orchestration.DatasetDiscovery") as MockDiscovery:
             mock_instance = Mock()
             mock_ds = DatasetInfo(
                 source="roboflow",
@@ -80,18 +80,18 @@ class TestDatasetDownloadTool:
     """Test DatasetDownloadTool."""
 
     def test_tool_has_correct_name(self):
-        from business_api.src.agents.orchestration import DatasetDownloadTool
+        from agents.orchestration import DatasetDownloadTool
         tool = DatasetDownloadTool()
         assert tool.name == "dataset_download"
 
     def test_tool_has_correct_description(self):
-        from business_api.src.agents.orchestration import DatasetDownloadTool
+        from agents.orchestration import DatasetDownloadTool
         tool = DatasetDownloadTool()
         assert "roboflow" in tool.description.lower() or "kaggle" in tool.description.lower()
 
     def test_tool_run_returns_success_message(self):
-        from business_api.src.agents.orchestration import DatasetDownloadTool
-        with patch("business_api.src.agents.orchestration.DatasetDiscovery") as MockDiscovery:
+        from agents.orchestration import DatasetDownloadTool
+        with patch("agents.orchestration.DatasetDiscovery") as MockDiscovery:
             mock_instance = Mock()
             mock_instance.download.return_value = "/data/fire-dataset"
             MockDiscovery.return_value = mock_instance
@@ -105,13 +105,13 @@ class TestTrainModelTool:
     """Test TrainModelTool."""
 
     def test_tool_has_correct_name(self):
-        from business_api.src.agents.orchestration import TrainModelTool
+        from agents.orchestration import TrainModelTool
         tool = TrainModelTool()
         assert tool.name == "model_train"
 
     def test_tool_run_returns_task_id(self):
-        from business_api.src.agents.orchestration import TrainModelTool
-        with patch("business_api.src.agents.orchestration.TrainingAPIClient") as MockClient:
+        from agents.orchestration import TrainModelTool
+        with patch("agents.orchestration.TrainingAPIClient") as MockClient:
             mock_instance = Mock()
             mock_instance.start_training.return_value = {"task_id": "train_abc123", "status": "started"}
             MockClient.return_value = mock_instance
@@ -121,8 +121,8 @@ class TestTrainModelTool:
             assert "train_abc123" in result or "Training started" in result
 
     def test_tool_run_handles_exception(self):
-        from business_api.src.agents.orchestration import TrainModelTool
-        with patch("business_api.src.agents.orchestration.TrainingAPIClient") as MockClient:
+        from agents.orchestration import TrainModelTool
+        with patch("agents.orchestration.TrainingAPIClient") as MockClient:
             mock_instance = Mock()
             mock_instance.start_training.side_effect = Exception("Connection refused")
             MockClient.return_value = mock_instance
@@ -135,13 +135,13 @@ class TestExportModelTool:
     """Test ExportModelTool."""
 
     def test_tool_has_correct_name(self):
-        from business_api.src.agents.orchestration import ExportModelTool
+        from agents.orchestration import ExportModelTool
         tool = ExportModelTool()
         assert tool.name == "model_export"
 
     def test_tool_run_calls_export_api(self):
-        from business_api.src.agents.orchestration import ExportModelTool
-        with patch("business_api.src.agents.orchestration.httpx.post") as mock_post:
+        from agents.orchestration import ExportModelTool
+        with patch("agents.orchestration.httpx.post") as mock_post:
             mock_response = Mock()
             mock_response.status_code = 200
             mock_post.return_value = mock_response
@@ -153,8 +153,8 @@ class TestExportModelTool:
             assert "Training started" in result or "Export started" in result
 
     def test_tool_run_handles_http_error(self):
-        from business_api.src.agents.orchestration import ExportModelTool
-        with patch("business_api.src.agents.orchestration.httpx.post") as mock_post:
+        from agents.orchestration import ExportModelTool
+        with patch("agents.orchestration.httpx.post") as mock_post:
             mock_response = Mock()
             mock_response.status_code = 500
             mock_response.text = "Internal Server Error"
@@ -168,18 +168,18 @@ class TestDataSynthesizeTool:
     """Test DataSynthesizeTool."""
 
     def test_tool_exists(self):
-        from business_api.src.agents.orchestration import DataSynthesizeTool
+        from agents.orchestration import DataSynthesizeTool
         tool = DataSynthesizeTool()
         assert tool.name == "data_synthesize"
 
     def test_tool_has_description(self):
-        from business_api.src.agents.orchestration import DataSynthesizeTool
+        from agents.orchestration import DataSynthesizeTool
         tool = DataSynthesizeTool()
         assert "synthetic" in tool.description.lower()
 
     def test_tool_run_falls_back_when_import_fails(self):
-        from business_api.src.agents.orchestration import DataSynthesizeTool
-        with patch("business_api.src.agents.orchestration.DataSynthesizeTool._run") as mock_run:
+        from agents.orchestration import DataSynthesizeTool
+        with patch("agents.orchestration.DataSynthesizeTool._run") as mock_run:
             # Simulate ImportError by patching the generator module
             mock_run.side_effect = ImportError("Module not found")
             tool = DataSynthesizeTool()
@@ -194,27 +194,27 @@ class TestAgentCreation:
     """Test agent creation functions."""
 
     def test_dataset_discovery_agent_exists(self):
-        with patch("business_api.src.agents.orchestration.get_llm") as mock_get_llm:
+        with patch("agents.orchestration.get_llm") as mock_get_llm:
             mock_get_llm.return_value = MagicMock()
-            from business_api.src.agents.orchestration import create_dataset_discovery_agent
+            from agents.orchestration import create_dataset_discovery_agent
             agent = create_dataset_discovery_agent()
             assert agent is not None
             assert hasattr(agent, "role")
             assert agent.role == "Dataset Curator"
 
     def test_dataset_discovery_agent_has_correct_tools(self):
-        with patch("business_api.src.agents.orchestration.get_llm") as mock_get_llm:
+        with patch("agents.orchestration.get_llm") as mock_get_llm:
             mock_get_llm.return_value = MagicMock()
-            from business_api.src.agents.orchestration import create_dataset_discovery_agent
+            from agents.orchestration import create_dataset_discovery_agent
             agent = create_dataset_discovery_agent()
             tool_names = [t.name for t in (agent.tools or [])]
             assert "dataset_search" in tool_names
             assert "dataset_download" in tool_names
 
     def test_data_generator_agent_has_synthesize_tool(self):
-        with patch("business_api.src.agents.orchestration.get_llm") as mock_get_llm:
+        with patch("agents.orchestration.get_llm") as mock_get_llm:
             mock_get_llm.return_value = MagicMock()
-            from business_api.src.agents.orchestration import create_data_generator_agent
+            from agents.orchestration import create_data_generator_agent
             agent = create_data_generator_agent()
             assert agent is not None
             tool_names = [t.name for t in (agent.tools or [])]
@@ -222,9 +222,9 @@ class TestAgentCreation:
             assert agent.role == "Data Engineer"
 
     def test_training_agent_has_train_tool(self):
-        with patch("business_api.src.agents.orchestration.get_llm") as mock_get_llm:
+        with patch("agents.orchestration.get_llm") as mock_get_llm:
             mock_get_llm.return_value = MagicMock()
-            from business_api.src.agents.orchestration import create_training_agent
+            from agents.orchestration import create_training_agent
             agent = create_training_agent()
             assert agent is not None
             tool_names = [t.name for t in (agent.tools or [])]
@@ -232,9 +232,9 @@ class TestAgentCreation:
             assert agent.role == "ML Engineer"
 
     def test_deployment_agent_has_export_tool(self):
-        with patch("business_api.src.agents.orchestration.get_llm") as mock_get_llm:
+        with patch("agents.orchestration.get_llm") as mock_get_llm:
             mock_get_llm.return_value = MagicMock()
-            from business_api.src.agents.orchestration import create_deployment_agent
+            from agents.orchestration import create_deployment_agent
             agent = create_deployment_agent()
             assert agent is not None
             tool_names = [t.name for t in (agent.tools or [])]
@@ -248,35 +248,35 @@ class TestCrewCreation:
     """Test crew creation."""
 
     def test_create_training_crew_returns_crew(self):
-        with patch("business_api.src.agents.orchestration.get_llm") as mock_get_llm:
+        with patch("agents.orchestration.get_llm") as mock_get_llm:
             mock_get_llm.return_value = MagicMock()
-            from business_api.src.agents.orchestration import create_training_crew
+            from agents.orchestration import create_training_crew
             crew = create_training_crew(task_description="fire detection")
             assert crew is not None
             assert hasattr(crew, "agents")
             assert len(crew.agents) == 4
 
     def test_crew_tasks_have_descriptions(self):
-        with patch("business_api.src.agents.orchestration.get_llm") as mock_get_llm:
+        with patch("agents.orchestration.get_llm") as mock_get_llm:
             mock_get_llm.return_value = MagicMock()
-            from business_api.src.agents.orchestration import create_training_crew
+            from agents.orchestration import create_training_crew
             crew = create_training_crew(task_description="smoke detection")
             assert len(crew.tasks) == 4
             for task in crew.tasks:
                 assert task.description is not None
 
     def test_crew_tasks_include_task_description(self):
-        with patch("business_api.src.agents.orchestration.get_llm") as mock_get_llm:
+        with patch("agents.orchestration.get_llm") as mock_get_llm:
             mock_get_llm.return_value = MagicMock()
-            from business_api.src.agents.orchestration import create_training_crew
+            from agents.orchestration import create_training_crew
             crew = create_training_crew(task_description="person detection")
             # First task description should include the task description
             assert "person detection" in crew.tasks[0].description
 
     def test_create_simple_crew_returns_crew(self):
-        with patch("business_api.src.agents.orchestration.get_llm") as mock_get_llm:
+        with patch("agents.orchestration.get_llm") as mock_get_llm:
             mock_get_llm.return_value = MagicMock()
-            from business_api.src.agents.orchestration import create_simple_crew
+            from agents.orchestration import create_simple_crew
             crew = create_simple_crew(task_description="cat detection")
             assert crew is not None
             assert len(crew.agents) == 2
@@ -289,31 +289,31 @@ class TestYOLOTrainingOrchestrator:
     """Test YOLOTrainingOrchestrator class."""
 
     def test_orchestrator_instantiates(self):
-        with patch("business_api.src.agents.orchestration.get_llm") as mock_get_llm:
+        with patch("agents.orchestration.get_llm") as mock_get_llm:
             mock_get_llm.return_value = MagicMock()
-            from business_api.src.agents.orchestration import YOLOTrainingOrchestrator
+            from agents.orchestration import YOLOTrainingOrchestrator
             orch = YOLOTrainingOrchestrator()
             assert orch is not None
 
     def test_get_status_returns_none_for_unknown_task(self):
-        with patch("business_api.src.agents.orchestration.get_llm") as mock_get_llm:
+        with patch("agents.orchestration.get_llm") as mock_get_llm:
             mock_get_llm.return_value = MagicMock()
             with patch(
-                "business_api.src.agents.orchestration.YOLOTrainingOrchestrator._get_redis"
+                "agents.orchestration.YOLOTrainingOrchestrator._get_redis"
             ) as mock_redis:
                 mock_r = MagicMock()
                 mock_r.hgetall.return_value = {}
                 mock_redis.return_value = mock_r
-                from business_api.src.agents.orchestration import YOLOTrainingOrchestrator
+                from agents.orchestration import YOLOTrainingOrchestrator
                 orch = YOLOTrainingOrchestrator()
                 result = orch.get_status("nonexistent_task")
                 assert result is None
 
     def test_get_status_returns_dict_for_known_task(self):
-        with patch("business_api.src.agents.orchestration.get_llm") as mock_get_llm:
+        with patch("agents.orchestration.get_llm") as mock_get_llm:
             mock_get_llm.return_value = MagicMock()
             with patch(
-                "business_api.src.agents.orchestration.YOLOTrainingOrchestrator._get_redis"
+                "agents.orchestration.YOLOTrainingOrchestrator._get_redis"
             ) as mock_redis:
                 mock_r = MagicMock()
                 mock_r.hgetall.return_value = {
@@ -325,7 +325,7 @@ class TestYOLOTrainingOrchestrator:
                     "result": "",
                 }
                 mock_redis.return_value = mock_r
-                from business_api.src.agents.orchestration import YOLOTrainingOrchestrator
+                from agents.orchestration import YOLOTrainingOrchestrator
                 orch = YOLOTrainingOrchestrator()
                 result = orch.get_status("task_123")
                 assert result is not None
@@ -333,24 +333,24 @@ class TestYOLOTrainingOrchestrator:
                 assert result["progress"] == 50.0
 
     def test_cancel_returns_false_when_not_running(self):
-        with patch("business_api.src.agents.orchestration.get_llm") as mock_get_llm:
+        with patch("agents.orchestration.get_llm") as mock_get_llm:
             mock_get_llm.return_value = MagicMock()
             with patch(
-                "business_api.src.agents.orchestration.YOLOTrainingOrchestrator._get_redis"
+                "agents.orchestration.YOLOTrainingOrchestrator._get_redis"
             ) as mock_redis:
                 mock_r = MagicMock()
                 mock_r.hget.return_value = "completed"
                 mock_redis.return_value = mock_r
-                from business_api.src.agents.orchestration import YOLOTrainingOrchestrator
+                from agents.orchestration import YOLOTrainingOrchestrator
                 orch = YOLOTrainingOrchestrator()
                 result = orch.cancel("completed_task_123")
                 assert result is False
 
     def test_cancel_sets_cancelled_status_for_running_task(self):
-        with patch("business_api.src.agents.orchestration.get_llm") as mock_get_llm:
+        with patch("agents.orchestration.get_llm") as mock_get_llm:
             mock_get_llm.return_value = MagicMock()
             with patch(
-                "business_api.src.agents.orchestration.YOLOTrainingOrchestrator._get_redis"
+                "agents.orchestration.YOLOTrainingOrchestrator._get_redis"
             ) as mock_redis:
                 mock_r = MagicMock()
                 # First call returns "running", second call (for training_task_id) returns None
@@ -358,7 +358,7 @@ class TestYOLOTrainingOrchestrator:
                     "running" if f == "status" else None
                 )
                 mock_redis.return_value = mock_r
-                from business_api.src.agents.orchestration import YOLOTrainingOrchestrator
+                from agents.orchestration import YOLOTrainingOrchestrator
                 orch = YOLOTrainingOrchestrator()
                 result = orch.cancel("test_task_123")
                 assert result is True
@@ -379,7 +379,7 @@ class TestGetLLM:
             if original is not None:
                 del os.environ["DEEPSEEK_API_KEY"]
             try:
-                from business_api.src.agents.orchestration import get_llm
+                from agents.orchestration import get_llm
                 with pytest.raises(ValueError, match="DEEPSEEK_API_KEY"):
                     get_llm()
             finally:
@@ -395,6 +395,6 @@ class TestGetLLM:
                 "DEEPSEEK_MODEL": "deepseek-chat",
             },
         ):
-            from business_api.src.agents.orchestration import get_llm
+            from agents.orchestration import get_llm
             llm = get_llm()
             assert llm is not None

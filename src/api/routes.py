@@ -170,6 +170,7 @@ async def get_training_status(task_id: str):
 
     .. deprecated::
         Use business-api/src/api/routes/train_routes.py /train/status/{task_id} instead.
+    """
     # Use task_id to look up results (in production, store task_id in Redis)
     # For now, return pending status
     return TrainStatusResponse(
@@ -205,6 +206,7 @@ async def export_model(
 
     .. deprecated::
         Use business-api/src/api/routes/deploy_routes.py /deploy/export instead.
+    """
     task_id = f"export_{uuid.uuid4().hex[:8]}"
 
     # Submit to Celery task queue
