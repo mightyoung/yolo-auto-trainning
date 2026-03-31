@@ -46,8 +46,8 @@ from fastapi import APIRouter, HTTPException, Header, status, BackgroundTasks, D
 from pydantic import BaseModel, Field
 
 # Import verify_internal_api_key from gateway for timing-safe comparison
-# Use relative import since gateway is in the same package
-from .gateway import verify_internal_api_key, check_rate_limit, get_redis_client
+# Use relative import since gateway is in the parent package (api/)
+from ..gateway import verify_internal_api_key, check_rate_limit, get_redis_client
 
 # Module-level retry circuit breaker: task_id -> retry count
 _retry_counts: Dict[str, int] = {}
@@ -56,7 +56,7 @@ _retry_counts: Dict[str, int] = {}
 # ==================== Request/Response Models ====================
 
 # Import models from centralized models package
-from .models import (
+from ..models import (
     TrainStartRequest,
     TrainStatusResponse,
     HPOStartRequest,
@@ -76,7 +76,7 @@ router = APIRouter()
 
 # Import centralized task storage from store package
 # This ensures a single source of truth for cache and lock
-from .store.task_store import (
+from ..store.task_store import (
     _tasks_cache,
     _tasks_lock,
     _task_get,

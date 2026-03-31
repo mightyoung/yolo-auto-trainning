@@ -286,6 +286,11 @@ async def root():
 
 # ==================== Import Routes ====================
 
+# NOTE: routes/ is now a package (routes/__init__.py + _routes_impl.py).
+# routes.py was renamed to _routes_impl.py to enable the package.
+# The import below loads routes/__init__.py which imports from _routes_impl,
+# which in turn imports from gateway (returns partially initialized module,
+# avoiding circular import deadlock).
 from .routes import router as internal_router
 from .model_routes import model_router
 
