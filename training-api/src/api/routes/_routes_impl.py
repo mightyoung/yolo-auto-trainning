@@ -49,8 +49,25 @@ from pydantic import BaseModel, Field
 # Use relative import since gateway is in the parent package (api/)
 from ..gateway import verify_internal_api_key, check_rate_limit, get_redis_client
 
-# Module-level retry circuit breaker: task_id -> retry count
-_retry_counts: Dict[str, int] = {}
+# Import shared state and sync functions from _shared
+from ._shared import (
+    _retry_counts,
+    _tasks_cache,
+    _tasks_lock,
+    _task_get,
+    _task_set,
+    _task_del,
+    _cancel_events,
+    _cancel_lock,
+    DynamicTrainingManager,
+    _run_training_sync,
+    _run_export_sync,
+    _run_benchmark_sync,
+    _run_curriculum_sync,
+    _run_hpo_sync,
+    _run_distill_sync,
+    _run_semi_supervised_sync,
+)
 
 
 # ==================== Request/Response Models ====================
@@ -74,59 +91,8 @@ router = APIRouter()
 
 # ==================== Task Storage ====================
 
-# Import centralized task storage from store package
-# This ensures a single source of truth for cache and lock
-from ..store.task_store import (
-    _tasks_cache,
-    _tasks_lock,
-    _task_get,
-    _task_set,
-    _task_del,
-    _cancel_events,
-    _cancel_lock,
-)
-
-# Note: DynamicTrainingManager and _run_training_sync are defined below.
-# The services package (services/training_service.py) contains simplified versions
-# for potential future extraction. The implementations below are the canonical ones.
-
-
-# ==================== Dynamic Training Manager ====================
-
-class DynamicTrainingManager:
-    """Backward-compatible wrapper around PlateauManager.
-
-    Phase 3.1 refactoring: Delegates plateau detection to PlateauManager,
-    which handles all plateau detection logic and cache updates internally.
-    """
-
-    def __init__(
-        self,
-        task_id: str,
-        plateau_config: "PlateauBreakingConfig",
-        device: str = "cuda:0",
-    ):
-        from src.training.plateau_manager import PlateauManager
-
-        self.task_id = task_id
-        self.cfg = plateau_config
-        self.device = device
-
-        # PlateauManager handles plateau detection and cache updates
-        self._manager = PlateauManager(
-            task_id=task_id,
-            config=plateau_config,
-        )
-
-    def on_metric(self, epoch: int, total_epochs: int, metrics: dict[str, float]) -> None:
-        """Called each epoch with current metrics."""
-        decision = self._manager.on_metric(epoch, total_epochs, metrics)
-        if decision.triggered:
-            self._manager.apply_decision(decision)
-
-    def get_status(self) -> dict:
-        """Return current plateau detection status."""
-        return self._manager.get_status()
+# Task store items are imported from _shared.py (which re-exports them from store.task_store)
+# DynamicTrainingManager and all _run_*_sync functions are imported from _shared.py
 
 
 # ==================== Training Endpoints ====================
