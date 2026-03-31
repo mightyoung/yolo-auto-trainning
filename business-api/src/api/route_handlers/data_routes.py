@@ -8,6 +8,7 @@ from pydantic import BaseModel, Field
 
 from ..auth import get_current_user, CurrentUser, check_rate_limit
 from ..audit import audit_logger
+from ..exceptions import ExternalDependencyError
 
 router = APIRouter()
 
@@ -84,6 +85,18 @@ async def search_datasets(
             query_time_ms=query_time_ms
         )
 
+    except ExternalDependencyError as e:
+        audit_logger.log_data_access(
+            user_id=current_user.user_id,
+            dataset_id=request.query,
+            action="search_failed",
+            request=http_request,
+            details={"query": request.query, "error": str(e)}
+        )
+        raise HTTPException(
+            status_code=503,
+            detail=f"Data service unavailable: {str(e)}"
+        )
     except Exception as e:
         audit_logger.log_data_access(
             user_id=current_user.user_id,

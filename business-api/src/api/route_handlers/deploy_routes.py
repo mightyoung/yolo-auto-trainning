@@ -15,6 +15,10 @@ from ..task_registry import (
     build_export_status_response,
 )
 from ..task_models import ExportStatusResponse
+from ..exceptions import (
+    ExternalDependencyError,
+    StateConflictError,
+)
 
 router = APIRouter()
 
@@ -86,6 +90,19 @@ async def export_model(
             message="Export job submitted to GPU server"
         )
 
+    except ExternalDependencyError as e:
+        audit_logger.log(
+            action="export",
+            user_id=current_user.user_id,
+            resource=f"export/{task_id}",
+            request=http_request,
+            details={"model_path": request.model_path, "platform": request.platform, "error": str(e)},
+            status="failure"
+        )
+        raise HTTPException(
+            status_code=503,
+            detail=f"Training service unavailable: {str(e)}"
+        )
     except Exception as e:
         audit_logger.log(
             action="export",
@@ -114,14 +131,17 @@ async def get_export_status(
         client = http_request.app.state.training_client
         task = await get_aggregated_task(redis_client, client, task_id, current_user.user_id)
         if task is None:
-            raise HTTPException(
-                status_code=404,
-                detail="Task not found or not authorized"
+            raise StateConflictError(
+                f"Task not found: {task_id}",
+                resource_type="task",
+                resource_id=task_id,
             )
         return build_export_status_response(task)
 
-    except HTTPException:
-        raise
+    except StateConflictError:
+        raise HTTPException(status_code=404, detail=f"Task not found: {task_id}")
+    except ExternalDependencyError as e:
+        raise HTTPException(status_code=503, detail=f"Training service unavailable: {str(e)}")
     except Exception as e:
         raise HTTPException(
             status_code=502,

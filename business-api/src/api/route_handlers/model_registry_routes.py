@@ -9,6 +9,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
 
 from ..auth import get_current_user, CurrentUser, check_rate_limit
+from ..exceptions import ExternalDependencyError, BusinessError
 
 router = APIRouter()
 

@@ -12,6 +12,7 @@ from ..task_registry import (
     build_task_record,
     store_task_in_redis,
 )
+from ..exceptions import ExternalDependencyError
 
 router = APIRouter()
 
@@ -142,6 +143,8 @@ async def analyze_dataset(
 
     except HTTPException:
         raise
+    except ExternalDependencyError:
+        raise
     except Exception as e:
         raise HTTPException(
             status_code=500,
@@ -210,6 +213,8 @@ async def generate_report(
         )
 
     except HTTPException:
+        raise
+    except ExternalDependencyError:
         raise
     except Exception as e:
         raise HTTPException(
