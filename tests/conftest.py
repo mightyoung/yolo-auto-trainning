@@ -11,10 +11,52 @@ from unittest.mock import Mock, patch
 # Add src to path - handle both direct and package execution
 project_root = Path(__file__).parent.parent
 src_path = project_root / "src"
+
 if str(src_path) not in sys.path:
     sys.path.insert(0, str(src_path))
 if str(project_root) not in sys.path:
     sys.path.insert(0, str(project_root))
+
+# Store original sys.path for restoration between test modules
+_original_sys_path = sys.path.copy()
+
+
+def _restore_sys_path():
+    """Restore sys.path and clear cached modules from training-api."""
+    sys.path[:] = _original_sys_path.copy()
+
+    # Clear all modules from training-api to prevent path pollution
+    modules_to_remove = []
+    for mod_name in list(sys.modules.keys()):
+        mod = sys.modules.get(mod_name)
+        if mod and hasattr(mod, '__file__') and mod.__file__:
+            if 'training-api' in mod.__file__:
+                modules_to_remove.append(mod_name)
+        # Also clear 'src' if it was cached to training-api path
+        if mod_name == 'src':
+            if mod and hasattr(mod, '__file__') and mod.__file__:
+                if 'training-api' in mod.__file__:
+                    modules_to_remove.append(mod_name)
+
+    for mod_name in modules_to_remove:
+        if mod_name in sys.modules:
+            del sys.modules[mod_name]
+
+
+def pytest_runtest_setup(item):
+    """Restore sys.path and clear modules before each test."""
+    _restore_sys_path()
+
+
+def pytest_collect_file(file_path, parent):
+    """Restore sys.path and clear modules before collecting each test file."""
+    _restore_sys_path()
+
+    # Also clear training.* modules to ensure clean import state
+    for mod_name in list(sys.modules.keys()):
+        if mod_name.startswith('training.') or mod_name == 'training':
+            if mod_name in sys.modules:
+                del sys.modules[mod_name]
 
 
 # ==================== Fixtures ====================
@@ -61,21 +103,22 @@ def mock_requests():
 
 @pytest.fixture
 def discovery_instance():
-    """Create DatasetDiscovery instance."""
+    """Create DatasetDiscovery instance - lazy import to avoid path pollution."""
     from src.data.discovery import DatasetDiscovery
     return DatasetDiscovery(api_keys={})
 
 
 @pytest.fixture
 def trainer_instance(temp_dir):
-    """Create YOLOTrainer instance."""
+    """Create YOLOTrainer instance - lazy import to avoid path pollution."""
+    # Import inside fixture to avoid module-level path pollution
     from src.training.runner import YOLOTrainer
     return YOLOTrainer(model="yolo11n", output_dir=temp_dir)
 
 
 @pytest.fixture
 def data_merger_instance():
-    """Create DataMerger instance."""
+    """Create DataMerger instance - lazy import to avoid path pollution."""
     try:
         from src.data.discovery import DataMerger
     except ImportError:

@@ -12,25 +12,18 @@ mock_yolo_class = Mock()
 mock_ultralytics.YOLO = mock_yolo_class
 sys.modules['ultralytics'] = mock_ultralytics
 
-# Add training-api to path - ensure training-api paths are at the front
+# Training API path setup
 test_dir = Path(__file__).parent
 project_root = test_dir.parent.parent
 training_api_path = project_root / "training-api"
 training_api_src_path = training_api_path / "src"
 
-# Remove any existing training-api paths and re-add at front
+# Insert training-api paths at front for imports
 for p in list(sys.path):
     if 'training-api' in p:
         sys.path.remove(p)
-
-# Insert at front in order: training_api_path, then training_api_src_path
-sys.path.insert(0, str(training_api_path))
 sys.path.insert(0, str(training_api_src_path))
-
-# Force reimport with mocks
-for mod_name in list(sys.modules.keys()):
-    if mod_name.startswith('training'):
-        del sys.modules[mod_name]
+sys.path.insert(0, str(training_api_path))
 
 from training.runner import (
     YOLOTrainer,
