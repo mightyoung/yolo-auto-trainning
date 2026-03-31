@@ -30,6 +30,15 @@ from ..task_models import (
     TaskDetailResponse,
     TrainStatusResponse,
 )
+from ..exceptions import (
+    BusinessError,
+    ExternalDependencyError,
+    StateConflictError,
+    ConfigurationError,
+    task_not_found,
+    task_not_owned,
+    training_api_unavailable,
+)
 
 # Import model registry routes to include in this router
 # This keeps model registry endpoints at /api/v1/train/models/registry
@@ -139,6 +148,18 @@ async def submit_training(
             estimated_time_minutes=estimated_time
         )
 
+    except ExternalDependencyError as e:
+        audit_logger.log_training(
+            user_id=current_user.user_id,
+            action="submit_failed",
+            task_id=task_id,
+            request=http_request,
+            details={"model": request.model, "epochs": request.epochs, "error": str(e)}
+        )
+        raise HTTPException(
+            status_code=503,
+            detail=f"Training service unavailable: {str(e)}"
+        )
     except Exception as e:
         audit_logger.log_training(
             user_id=current_user.user_id,
@@ -166,10 +187,7 @@ async def get_training_status(
         client = http_request.app.state.training_client
         task = await get_aggregated_task(redis_client, client, task_id, current_user.user_id)
         if task is None:
-            raise HTTPException(
-                status_code=404,
-                detail="Task not found or not authorized"
-            )
+            raise task_not_found(task_id)
 
         audit_logger.log_training(
             user_id=current_user.user_id,
@@ -181,8 +199,10 @@ async def get_training_status(
 
         return build_training_status_response(task)
 
-    except HTTPException:
-        raise
+    except StateConflictError:
+        raise HTTPException(status_code=404, detail=f"Task not found: {task_id}")
+    except ExternalDependencyError as e:
+        raise HTTPException(status_code=503, detail=f"Training service unavailable: {str(e)}")
     except Exception as e:
         raise HTTPException(
             status_code=502,
@@ -202,10 +222,7 @@ async def cancel_training(
         redis_client = get_redis_client(http_request)
         task = verify_task_ownership(redis_client, task_id, current_user.user_id)
         if task is None:
-            raise HTTPException(
-                status_code=404,
-                detail="Task not found or not authorized"
-            )
+            raise task_not_owned(task_id, current_user.user_id)
 
         client = http_request.app.state.training_client
         result = await client.cancel_task(task_id)
@@ -223,8 +240,10 @@ async def cancel_training(
             "message": "Training job cancelled"
         }
 
-    except HTTPException:
-        raise
+    except StateConflictError:
+        raise HTTPException(status_code=404, detail=f"Task not found: {task_id}")
+    except ExternalDependencyError as e:
+        raise HTTPException(status_code=503, detail=f"Training service unavailable: {str(e)}")
     except Exception as e:
         raise HTTPException(
             status_code=502,
@@ -245,10 +264,7 @@ async def adjust_training(
         redis_client = get_redis_client(http_request)
         task = verify_task_ownership(redis_client, task_id, current_user.user_id)
         if task is None:
-            raise HTTPException(
-                status_code=404,
-                detail="Task not found or not authorized"
-            )
+            raise task_not_owned(task_id, current_user.user_id)
 
         client = http_request.app.state.training_client
 
@@ -343,8 +359,10 @@ async def adjust_training(
             "gpu_server": "http://192.168.11.3:8001",
         }
 
-    except HTTPException:
-        raise
+    except StateConflictError:
+        raise HTTPException(status_code=404, detail=f"Task not found: {task_id}")
+    except ExternalDependencyError as e:
+        raise HTTPException(status_code=503, detail=f"Training service unavailable: {str(e)}")
     except Exception as e:
         raise HTTPException(
             status_code=502,
@@ -381,17 +399,24 @@ async def get_task_detail(
     _: None = Depends(check_rate_limit)
 ):
     """Get a single task detail view."""
-    redis_client = get_redis_client(request)
-    training_client = request.app.state.training_client
-    task = await get_aggregated_task(redis_client, training_client, task_id, current_user.user_id)
+    try:
+        redis_client = get_redis_client(request)
+        training_client = request.app.state.training_client
+        task = await get_aggregated_task(redis_client, training_client, task_id, current_user.user_id)
 
-    if task is None:
+        if task is None:
+            raise task_not_found(task_id)
+
+        return TaskDetailResponse(task=task)
+    except StateConflictError:
+        raise HTTPException(status_code=404, detail=f"Task not found: {task_id}")
+    except ExternalDependencyError as e:
+        raise HTTPException(status_code=503, detail=f"Training service unavailable: {str(e)}")
+    except Exception as e:
         raise HTTPException(
-            status_code=404,
-            detail="Task not found or not authorized"
+            status_code=502,
+            detail=f"Failed to get task detail: {str(e)}"
         )
-
-    return TaskDetailResponse(task=task)
 
 
 @router.delete("/tasks/{task_id}")
@@ -402,19 +427,24 @@ async def delete_task(
     _: None = Depends(check_rate_limit)
 ):
     """Delete a task."""
-    redis_client = get_redis_client(request)
-    success = delete_task_from_redis(redis_client, task_id, current_user.user_id)
+    try:
+        redis_client = get_redis_client(request)
+        success = delete_task_from_redis(redis_client, task_id, current_user.user_id)
 
-    if not success:
+        if not success:
+            raise task_not_owned(task_id, current_user.user_id)
+
+        return {
+            "task_id": task_id,
+            "status": "deleted",
+            "message": "Task deleted successfully"
+        }
+    except StateConflictError:
+        raise HTTPException(status_code=404, detail=f"Task not found: {task_id}")
+    except Exception as e:
         raise HTTPException(
-            status_code=404,
-            detail="Task not found or not authorized"
+            status_code=502,
+            detail=f"Failed to delete task: {str(e)}"
         )
-
-    return {
-        "task_id": task_id,
-        "status": "deleted",
-        "message": "Task deleted successfully"
-    }
 
 
