@@ -59,10 +59,10 @@ def mock_requests():
 # ==================== Module Fixtures ====================
 
 @pytest.fixture
-def discovery_instance(temp_dir):
+def discovery_instance():
     """Create DatasetDiscovery instance."""
     from src.data.discovery import DatasetDiscovery
-    return DatasetDiscovery(output_dir=temp_dir)
+    return DatasetDiscovery(api_keys={})
 
 
 @pytest.fixture
