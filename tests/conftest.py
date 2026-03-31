@@ -7,7 +7,8 @@ import sys
 from pathlib import Path
 from unittest.mock import Mock, patch
 
-# Add src to path
+
+# Add src to path - handle both direct and package execution
 project_root = Path(__file__).parent.parent
 src_path = project_root / "src"
 if str(src_path) not in sys.path:

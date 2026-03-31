@@ -14,10 +14,12 @@ project_root = test_dir.parent.parent
 training_api_path = project_root / "training-api"
 src_path = training_api_path / "src"
 
+# Append (don't prepend) training-api/src so it doesn't shadow project_root/src
+# This ensures 'pipeline' and 'data' modules resolve correctly
 if str(src_path) not in sys.path:
-    sys.path.insert(0, str(src_path))
+    sys.path.append(str(src_path))
 if str(project_root) not in sys.path:
-    sys.path.insert(0, str(project_root))
+    sys.path.append(str(project_root))
 
 from deployment.exporter import ModelExporter, ExportResult, EdgeDeployer, get_benchmark
 
@@ -460,6 +462,11 @@ class TestEdgeDeployer:
 
     def test_deploy_to_jetson(self, temp_dir):
         """Test deploy to Jetson device."""
+        # Skip if paramiko not installed (required for edge deployment)
+        try:
+            import paramiko  # noqa: F401
+        except ImportError:
+            pytest.skip("paramiko not installed, skipping edge deployment test")
         deployer = EdgeDeployer()
         model_path = temp_dir / "model.onnx"
 

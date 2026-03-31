@@ -10,7 +10,19 @@ Tests cover:
 
 import pytest
 from unittest.mock import Mock, MagicMock
-from src.pipeline.orchestrator import (
+from pathlib import Path
+import sys
+
+# Add src to path - handle both direct and package execution
+test_dir = Path(__file__).parent
+project_root = test_dir.parent.parent
+src_path = project_root / "src"
+if str(src_path) not in sys.path:
+    sys.path.insert(0, str(src_path))
+if str(project_root) not in sys.path:
+    sys.path.insert(0, str(project_root))
+
+from pipeline.orchestrator import (
     PipelineExecutor,
     Pipeline,
     PipelineTask,

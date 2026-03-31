@@ -15,7 +15,16 @@ from dataclasses import dataclass
 
 from ultralytics import YOLO
 
-from src.deployment.validator import ModelValidator
+# Lazy import for validator - avoids import errors during test collection
+_model_validator = None
+
+def _get_validator():
+    """Lazy load ModelValidator."""
+    global _model_validator
+    if _model_validator is None:
+        from src.deployment.validator import ModelValidator
+        _model_validator = ModelValidator
+    return _model_validator
 
 # Lazy imports for optional dependencies
 _paramiko = None
@@ -157,7 +166,7 @@ class ModelExporter:
             model_path = Path(export_path)
 
             # Validate exported model
-            validation = ModelValidator.validate_model_file(model_path)
+            validation = _get_validator().validate_model_file(model_path)
             if not validation["valid"]:
                 return ExportResult(
                     status="failed",
@@ -218,7 +227,7 @@ class ModelExporter:
             model_path = Path(export_path)
 
             # Validate exported model
-            validation = ModelValidator.validate_model_file(model_path)
+            validation = _get_validator().validate_model_file(model_path)
             if not validation["valid"]:
                 return ExportResult(
                     status="failed",
