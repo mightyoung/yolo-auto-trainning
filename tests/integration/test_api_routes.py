@@ -1,4 +1,8 @@
 # Integration Tests - API Routes
+#
+# NOTE: Uses httpx.AsyncClient instead of Starlette TestClient to avoid
+# Python 3.14 metaclass conflict when tests are collected together with
+# modules that mock sys.modules (e.g., test_agents.py)
 
 import os
 import pytest
@@ -36,38 +40,33 @@ pytestmark = pytest.mark.integration
 class TestHealthEndpoint:
     """Test health check endpoint."""
 
-    def test_health_check_returns_200(self):
-        """Health check returns 200."""
-        from fastapi.testclient import TestClient
+    @pytest.fixture
+    def client(self):
+        """Create test client using httpx AsyncClient to avoid Starlette metaclass conflict."""
+        import httpx
         from api.gateway import app
+        return httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test")
 
+    @pytest.mark.asyncio
+    async def test_health_check_returns_200(self, client):
+        """Health check returns 200."""
         with patch('src.api.gateway.get_redis_client'):
-            client = TestClient(app)
-            response = client.get("/health")
-
+            response = await client.get("/health")
             assert response.status_code == 200
 
-    def test_health_check_returns_healthy(self):
+    @pytest.mark.asyncio
+    async def test_health_check_returns_healthy(self, client):
         """Health check returns healthy status."""
-        from fastapi.testclient import TestClient
-        from api.gateway import app
-
         with patch('src.api.gateway.get_redis_client'):
-            client = TestClient(app)
-            response = client.get("/health")
-
+            response = await client.get("/health")
             data = response.json()
             assert data["status"] == "healthy"
 
-    def test_health_check_returns_version(self):
+    @pytest.mark.asyncio
+    async def test_health_check_returns_version(self, client):
         """Health check returns version."""
-        from fastapi.testclient import TestClient
-        from api.gateway import app
-
         with patch('src.api.gateway.get_redis_client'):
-            client = TestClient(app)
-            response = client.get("/health")
-
+            response = await client.get("/health")
             data = response.json()
             assert "version" in data
 
@@ -79,27 +78,20 @@ class TestDataEndpoints:
 
     @pytest.fixture
     def client(self):
-        """Create test client."""
-        from fastapi.testclient import TestClient
+        """Create test client using httpx AsyncClient."""
+        import httpx
         from api.gateway import app
+        return httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test")
 
-        # Patch before creating TestClient
-        with patch('src.data.discovery.DatasetDiscovery') as mock:
-            self._mock_discovery = mock
-            mock_instance = Mock()
-            mock_instance.search.return_value = []
-            mock.return_value = mock_instance
-            client = TestClient(app)
-            return client
-
-    def test_search_datasets_endpoint(self, client):
+    @pytest.mark.asyncio
+    async def test_search_datasets_endpoint(self, client):
         """Data search endpoint works."""
         with patch('src.data.discovery.DatasetDiscovery') as mock_discovery:
             mock_instance = Mock()
             mock_instance.search.return_value = []
             mock_discovery.return_value = mock_instance
 
-            response = client.post(
+            response = await client.post(
                 "/api/v1/data/search",
                 json={"query": "car detection", "max_results": 5}
             )
@@ -107,7 +99,8 @@ class TestDataEndpoints:
             assert response.status_code == 200
             assert "datasets" in response.json()
 
-    def test_search_datasets_with_results(self, client):
+    @pytest.mark.asyncio
+    async def test_search_datasets_with_results(self, client):
         """Data search returns results."""
         from src.data.discovery import DatasetInfo
 
@@ -127,7 +120,7 @@ class TestDataEndpoints:
             ]
             mock_discovery.return_value = mock_instance
 
-            response = client.post(
+            response = await client.post(
                 "/api/v1/data/search",
                 json={"query": "car detection", "max_results": 10}
             )
@@ -145,40 +138,42 @@ class TestTrainingEndpoints:
 
     @pytest.fixture
     def client(self):
-        """Create test client."""
-        from fastapi.testclient import TestClient
+        """Create test client using httpx AsyncClient."""
+        import httpx
         from api.gateway import app
-        return TestClient(app)
+        return httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test")
 
-    def test_train_start_endpoint(self, client):
+    @pytest.mark.asyncio
+    async def test_train_start_endpoint(self, client):
         """Training start endpoint works."""
-        with patch('src.api.tasks.training_task'):
-            response = client.post(
-                "/api/v1/train/start",
-                json={
-                    "data_yaml": "/data/dataset.yaml",
-                    "model": "yolo11m",
-                    "epochs": 100,
-                    "imgsz": 640,
-                }
-            )
+        response = await client.post(
+            "/api/v1/train/start",
+            json={
+                "data_yaml": "/data/dataset.yaml",
+                "model": "yolo11m",
+                "epochs": 100,
+                "imgsz": 640,
+            }
+        )
 
-            assert response.status_code == 200
-            data = response.json()
-            assert "task_id" in data
-            assert data["status"] == "submitted"
+        assert response.status_code == 200
+        data = response.json()
+        assert "task_id" in data
+        assert data["status"] == "submitted"
 
-    def test_train_status_endpoint(self, client):
+    @pytest.mark.asyncio
+    async def test_train_status_endpoint(self, client):
         """Training status endpoint works."""
-        response = client.get("/api/v1/train/status/test_task_123")
+        response = await client.get("/api/v1/train/status/test_task_123")
 
         assert response.status_code == 200
         data = response.json()
         assert "status" in data
 
-    def test_train_results_endpoint(self, client):
+    @pytest.mark.asyncio
+    async def test_train_results_endpoint(self, client):
         """Training results endpoint works."""
-        response = client.get("/api/v1/train/results/test_task_123")
+        response = await client.get("/api/v1/train/results/test_task_123")
 
         assert response.status_code == 200
         data = response.json()
@@ -192,30 +187,31 @@ class TestExportEndpoints:
 
     @pytest.fixture
     def client(self):
-        """Create test client."""
-        from fastapi.testclient import TestClient
+        """Create test client using httpx AsyncClient."""
+        import httpx
         from api.gateway import app
-        return TestClient(app)
+        return httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test")
 
-    def test_export_endpoint(self, client):
+    @pytest.mark.asyncio
+    async def test_export_endpoint(self, client):
         """Export endpoint works."""
-        with patch('src.api.tasks.export_task'):
-            response = client.post(
-                "/api/v1/deploy/export",
-                json={
-                    "model_path": "/models/best.pt",
-                    "platform": "jetson_orin",
-                    "imgsz": 640,
-                }
-            )
+        response = await client.post(
+            "/api/v1/deploy/export",
+            json={
+                "model_path": "/models/best.pt",
+                "platform": "jetson_orin",
+                "imgsz": 640,
+            }
+        )
 
-            assert response.status_code == 200
-            data = response.json()
-            assert "task_id" in data
+        assert response.status_code == 200
+        data = response.json()
+        assert "task_id" in data
 
-    def test_export_status_endpoint(self, client):
+    @pytest.mark.asyncio
+    async def test_export_status_endpoint(self, client):
         """Export status endpoint works."""
-        response = client.get("/api/v1/deploy/export/status/export_task_123")
+        response = await client.get("/api/v1/deploy/export/status/export_task_123")
 
         assert response.status_code == 200
         data = response.json()

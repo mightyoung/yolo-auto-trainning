@@ -27,7 +27,6 @@ project_root = Path(__file__).parent.parent.parent
 biz_api_src = project_root / "business-api" / "src"
 
 # Mock dependencies that orchestration module imports at top level
-sys.modules['httpx'] = MagicMock()
 sys.modules['redis'] = MagicMock()
 
 # Create a mock DatasetInfo class for tests
