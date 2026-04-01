@@ -7,7 +7,6 @@ Contains:
 - Model storage and retrieval
 """
 
-from typing import List
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Request, status
 from pydantic import BaseModel
@@ -29,7 +28,7 @@ class ModelMetadata(BaseModel):
 
 class ModelListResponse(BaseModel):
     """Model list response."""
-    models: List[ModelMetadata]
+    models: list[ModelMetadata]
     total: int
 
 
