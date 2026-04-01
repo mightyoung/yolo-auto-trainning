@@ -54,10 +54,10 @@ class RuntimeSettings:
     def ACCESS_TOKEN_EXPIRE_MINUTES(self) -> int:
         return 30
 
-    # API Key settings
+    # API Key settings - no default, must be configured
     @property
-    def BUSINESS_API_KEY(self) -> str:
-        return os.getenv("BUSINESS_API_KEY", "default-business-api-key")
+    def BUSINESS_API_KEY(self) -> str | None:
+        return os.getenv("BUSINESS_API_KEY")
 
     # Redis settings
     @property
