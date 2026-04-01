@@ -37,7 +37,8 @@ JWT_ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 30
 
 # API Key settings for service-to-service authentication
-BUSINESS_API_KEY = os.getenv("BUSINESS_API_KEY", "default-business-api-key")
+# No default - must be configured via environment
+BUSINESS_API_KEY = os.getenv("BUSINESS_API_KEY")
 
 # Redis settings
 REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379/0")
