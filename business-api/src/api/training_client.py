@@ -5,6 +5,7 @@ This module provides a client for the training API running on the GPU server.
 """
 
 import json
+import os
 import uuid
 from datetime import datetime
 from typing import Any

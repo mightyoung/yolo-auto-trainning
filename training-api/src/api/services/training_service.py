@@ -31,7 +31,7 @@ class DynamicTrainingManager:
     def __init__(
         self,
         task_id: str,
-        plateau_config: "PlateauBreakingConfig",
+        plateau_config: "PlateauBreakingConfig",  # noqa: F821 - forward reference
         device: str = "cuda:0",
     ):
         from src.training.plateau_manager import PlateauManager
