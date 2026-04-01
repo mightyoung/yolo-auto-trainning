@@ -19,7 +19,7 @@ logger = logging.getLogger(__name__)
 def _get_redis():
     import redis
     url = os.environ.get('REDIS_URL', 'redis://localhost:6379/0')
-    pw = os.environ.get('REDIS_PASSWORD', '')
+    pw = os.environ.get('REDIS_PASSWORD')  # No default - must be configured
     if pw:
         return redis.from_url(url, password=pw, decode_responses=True)
     return redis.from_url(url, decode_responses=True)

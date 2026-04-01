@@ -256,10 +256,10 @@ class YOLOTrainingOrchestrator:
         except ImportError:
             import redis
             return redis.Redis(
-                host=os.getenv("REDIS_HOST", "192.168.11.134"),
+                host=os.getenv("REDIS_HOST", "localhost"),
                 port=int(os.getenv("REDIS_PORT", "6379")),
                 db=0,
-                password=os.getenv("REDIS_PASSWORD", "123456"),
+                password=os.getenv("REDIS_PASSWORD"),  # No default - must be configured
                 decode_responses=True,
             )
 
@@ -455,9 +455,9 @@ class YOLOTrainingOrchestrator:
         For coco_builtin source, tries multiple known path variants to find existing data.
         """
         import paramiko
-        ssh_host = os.getenv("GPU_SERVER_HOST", "192.168.11.3")
-        ssh_user = os.getenv("GPU_SERVER_USER", "wangxin")
-        ssh_pass = os.getenv("GPU_SERVER_PASS", "123123")
+        ssh_host = os.getenv("GPU_SERVER_HOST")  # No default - must be configured
+        ssh_user = os.getenv("GPU_SERVER_USER")  # No default - must be configured
+        ssh_pass = os.getenv("GPU_SERVER_PASS")  # No default - must be configured
 
         # For coco_builtin, try multiple known path variants
         paths_to_try = [dataset_path]
@@ -495,9 +495,9 @@ class YOLOTrainingOrchestrator:
         """Download Roboflow dataset to GPU server via SSH."""
         import paramiko
 
-        ssh_host = os.getenv("GPU_SERVER_HOST", "192.168.11.3")
-        ssh_user = os.getenv("GPU_SERVER_USER", "wangxin")
-        ssh_pass = os.getenv("GPU_SERVER_PASS", "123123")
+        ssh_host = os.getenv("GPU_SERVER_HOST")  # No default - must be configured
+        ssh_user = os.getenv("GPU_SERVER_USER")  # No default - must be configured
+        ssh_pass = os.getenv("GPU_SERVER_PASS")  # No default - must be configured
 
         api_key = os.getenv("ROBOFLOW_API_KEY")
         if not api_key:
@@ -585,9 +585,9 @@ class YOLOTrainingOrchestrator:
         """
         import paramiko
 
-        ssh_host = os.getenv("GPU_SERVER_HOST", "192.168.11.3")
-        ssh_user = os.getenv("GPU_SERVER_USER", "wangxin")
-        ssh_pass = os.getenv("GPU_SERVER_PASS", "123123")
+        ssh_host = os.getenv("GPU_SERVER_HOST")  # No default - must be configured
+        ssh_user = os.getenv("GPU_SERVER_USER")  # No default - must be configured
+        ssh_pass = os.getenv("GPU_SERVER_PASS")  # No default - must be configured
 
         script = (
             "import urllib.request, zipfile, json, shutil, os\n"
@@ -714,9 +714,9 @@ class YOLOTrainingOrchestrator:
         """Generate data.yaml on GPU server based on actual dataset structure."""
         import paramiko
 
-        ssh_host = os.getenv("GPU_SERVER_HOST", "192.168.11.3")
-        ssh_user = os.getenv("GPU_SERVER_USER", "wangxin")
-        ssh_pass = os.getenv("GPU_SERVER_PASS", "123123")
+        ssh_host = os.getenv("GPU_SERVER_HOST")  # No default - must be configured
+        ssh_user = os.getenv("GPU_SERVER_USER")  # No default - must be configured
+        ssh_pass = os.getenv("GPU_SERVER_PASS")  # No default - must be configured
 
         script = (
             "import os, json\n"
@@ -818,7 +818,7 @@ class YOLOTrainingOrchestrator:
         try:
             from src.api.training_client import TrainingAPIClient
             client = TrainingAPIClient(
-                base_url=os.getenv("TRAINING_API_URL", "http://192.168.11.3:8001"),
+                base_url=os.getenv("TRAINING_API_URL", "http://localhost:8001"),
                 api_key=os.getenv("TRAINING_API_KEY", "5M2oDsEfm0KxwSwFhLDtsq77FGztUY9DapuwQPx0fSE"),
             )
 
@@ -1061,7 +1061,7 @@ class YOLOTrainingOrchestrator:
             try:
                 from src.api.training_client import TrainingAPIClient
                 client = TrainingAPIClient(
-                    base_url=os.getenv("TRAINING_API_URL", "http://192.168.11.3:8001"),
+                    base_url=os.getenv("TRAINING_API_URL", "http://localhost:8001"),
                     api_key=os.getenv("TRAINING_API_KEY", "5M2oDsEfm0KxwSwFhLDtsq77FGztUY9DapuwQPx0fSE"),
                 )
                 r = self._get_redis()
@@ -1505,7 +1505,7 @@ class AutoAdjustAgent:
                 import paramiko
                 ssh_host = os.getenv("GPU_SERVER_HOST", "192.168.11.3")
                 ssh_user = os.getenv("GPU_SERVER_USER", "wangxin")
-                ssh_pass = os.getenv("GPU_SERVER_PASS", "123123")
+                ssh_pass = os.getenv("GPU_SERVER_PASS")  # No default - must be configured
                 ssh = paramiko.SSHClient()
                 ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
                 ssh.connect(ssh_host, username=ssh_user, password=ssh_pass, timeout=10)
@@ -1579,7 +1579,7 @@ class AutoAdjustAgent:
                     import paramiko
                     ssh_host = os.getenv("GPU_SERVER_HOST", "192.168.11.3")
                     ssh_user = os.getenv("GPU_SERVER_USER", "wangxin")
-                    ssh_pass = os.getenv("GPU_SERVER_PASS", "123123")
+                    ssh_pass = os.getenv("GPU_SERVER_PASS")  # No default - must be configured
                     ssh = paramiko.SSHClient()
                     ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
                     ssh.connect(ssh_host, username=ssh_user, password=ssh_pass, timeout=10)
@@ -1629,7 +1629,7 @@ class AutoAdjustAgent:
                     import paramiko
                     ssh_host = os.getenv("GPU_SERVER_HOST", "192.168.11.3")
                     ssh_user = os.getenv("GPU_SERVER_USER", "wangxin")
-                    ssh_pass = os.getenv("GPU_SERVER_PASS", "123123")
+                    ssh_pass = os.getenv("GPU_SERVER_PASS")  # No default - must be configured
                     ssh = paramiko.SSHClient()
                     ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
                     ssh.connect(ssh_host, username=ssh_user, password=ssh_pass, timeout=10)
