@@ -7,13 +7,12 @@ Contains:
 - Model storage and retrieval
 """
 
-from fastapi import APIRouter, HTTPException, Header, status, Request, Depends
+from fastapi import APIRouter, Depends, Header, HTTPException, Request, status
 from pydantic import BaseModel
 
 # Import verify_internal_api_key from gateway for timing-safe comparison
 # Use relative import since gateway is in the same package
-from .gateway import verify_internal_api_key, check_rate_limit
-
+from .gateway import check_rate_limit, verify_internal_api_key
 
 # ==================== Request/Response Models ====================
 

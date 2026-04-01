@@ -8,19 +8,17 @@ This API runs on GPU server and handles:
 - Model Export (ONNX, TensorRT)
 """
 
-from contextlib import asynccontextmanager
-from datetime import datetime
-from typing import Optional
 import os
 import secrets
 import time
+from contextlib import asynccontextmanager
+from datetime import datetime
 
-from fastapi import FastAPI, HTTPException, status, Request
+import redis
+from fastapi import FastAPI, HTTPException, Request, status
 from fastapi.middleware.cors import CORSMiddleware
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.responses import Response
-import redis
-
 
 # ==================== Runtime Settings ====================
 # These are read at runtime, not at import time
@@ -47,12 +45,12 @@ class RuntimeSettings:
         return os.getenv("REDIS_URL", "redis://localhost:6379/0")
 
     @property
-    def REDIS_PASSWORD(self) -> Optional[str]:
+    def REDIS_PASSWORD(self) -> str | None:
         return os.getenv("REDIS_PASSWORD")
 
     # Internal API Key - must be set in environment
     @property
-    def INTERNAL_API_KEY(self) -> Optional[str]:
+    def INTERNAL_API_KEY(self) -> str | None:
         return os.getenv("INTERNAL_API_KEY")
 
 
@@ -288,8 +286,8 @@ async def root():
 # The import below loads routes/__init__.py which imports from _routes_impl,
 # which in turn imports from gateway (returns partially initialized module,
 # avoiding circular import deadlock).
-from .routes import router as internal_router
 from .model_routes import model_router
+from .routes import router as internal_router
 
 # Include internal routes
 app.include_router(internal_router, prefix="/api/v1/internal", tags=["Internal"])

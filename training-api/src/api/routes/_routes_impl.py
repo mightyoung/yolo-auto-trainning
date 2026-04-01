@@ -29,7 +29,7 @@ import threading
 import uuid
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 from fastapi import APIRouter, BackgroundTasks, Depends, Header, HTTPException, Request, status
 from pydantic import BaseModel, Field
@@ -45,40 +45,37 @@ if str(_training_api_src_root) not in sys.path:
 
 # Import verify_internal_api_key from gateway for timing-safe comparison
 # Use relative import since gateway is in the parent package (api/)
-from ..gateway import verify_internal_api_key, check_rate_limit, get_redis_client
+from ..gateway import check_rate_limit, get_redis_client, verify_internal_api_key
+
+# ==================== Request/Response Models ====================
+# Import models from centralized models package
+from ..models import (
+    ActiveLearnSelectRequest,
+    BenchmarkRunRequest,
+    ExportStartRequest,
+    HPOStartRequest,
+    SemiSupervisedRequest,
+    TrainStartRequest,
+    TrainStatusResponse,
+)
 
 # Import shared state and sync functions from services/_shared
 # Using ..services._shared because _shared was moved out of routes/ to break circular import
 from ..services._shared import (
-    _retry_counts,
-    _tasks_cache,
-    _tasks_lock,
-    _task_get,
-    _task_set,
     _cancel_events,
     _cancel_lock,
-    _run_training_sync,
-    _run_export_sync,
+    _retry_counts,
     _run_benchmark_sync,
-    _run_hpo_sync,
     _run_distill_sync,
+    _run_export_sync,
+    _run_hpo_sync,
     _run_semi_supervised_sync,
+    _run_training_sync,
+    _task_get,
+    _task_set,
+    _tasks_cache,
+    _tasks_lock,
 )
-
-
-# ==================== Request/Response Models ====================
-
-# Import models from centralized models package
-from ..models import (
-    TrainStartRequest,
-    TrainStatusResponse,
-    HPOStartRequest,
-    ExportStartRequest,
-    BenchmarkRunRequest,
-    ActiveLearnSelectRequest,
-    SemiSupervisedRequest,
-)
-
 
 # ==================== Create Router ====================
 
@@ -179,7 +176,7 @@ class CurriculumStageRequest(BaseModel):
     imgsz: int = 640
     batch: int = 16
     model: str = "yolo11m"
-    augmentation_preset: Optional[str] = "balanced"
+    augmentation_preset: str | None = "balanced"
     num_gpus: int = Field(1, description="Number of GPUs for DDP training (1=single, 2+=multi-GPU on same node)")
     warmup_ratio: float = Field(0.05, description="Fraction of epochs for warmup (default 5%%). Mirrors WARMUP_RATIO from autoresearch.")
     mosaic: float = 1.0
@@ -199,15 +196,15 @@ class CurriculumStartRequest(BaseModel):
     device: str = Field("cuda:0", description="Device")
     auto_export: bool = Field(True, description="Auto-export ONNX after completion")
     # Three stages (all optional, use defaults if not specified)
-    stage1: Optional[CurriculumStageRequest] = Field(
+    stage1: CurriculumStageRequest | None = Field(
         None,
         description="Stage 1: Rapid validation (default: 50ep@640px)"
     )
-    stage2: Optional[CurriculumStageRequest] = Field(
+    stage2: CurriculumStageRequest | None = Field(
         None,
         description="Stage 2: Deep training (default: 150ep@1280px)"
     )
-    stage3: Optional[CurriculumStageRequest] = Field(
+    stage3: CurriculumStageRequest | None = Field(
         None,
         description="Stage 3: Fine-tuning (default: 100ep@1280px)"
     )
@@ -578,11 +575,11 @@ async def cancel_training(
 class TrainResumeRequest(BaseModel):
     """Internal training resume request."""
     task_id: str = Field(..., description="Original task identifier to resume from")
-    output_dir: Optional[str] = Field(None, description="Override output directory (default: use original task's output_dir)")
-    epochs: Optional[int] = Field(None, description="Override number of epochs (default: use original task's epochs)")
+    output_dir: str | None = Field(None, description="Override output directory (default: use original task's output_dir)")
+    epochs: int | None = Field(None, description="Override number of epochs (default: use original task's epochs)")
 
 
-def _find_last_checkpoint(output_dir: str) -> Optional[str]:
+def _find_last_checkpoint(output_dir: str) -> str | None:
     """
     Find the most recent last.pt checkpoint under output_dir/train/expN/weights/.
     Searches in reverse order to find the highest exp number.
@@ -1053,8 +1050,8 @@ class AutoLabelResponse(BaseModel):
     task_id: str
     status: str
     message: str
-    output_folder: Optional[str] = None
-    data_yaml_path: Optional[str] = None
+    output_folder: str | None = None
+    data_yaml_path: str | None = None
 
 
 @router.post("/label/submit")
@@ -1234,7 +1231,7 @@ class ModelCreateRequest(BaseModel):
     """Create registered model request."""
     name: str = Field(..., description="Model name")
     description: str = Field("", description="Model description")
-    tags: Optional[dict] = Field(default_factory=dict, description="Model tags")
+    tags: dict | None = Field(default_factory=dict, description="Model tags")
 
 
 class ModelStageTransitionRequest(BaseModel):
@@ -1323,7 +1320,7 @@ async def create_registered_model(
 async def get_model_info(
     name: str,
     http_request: Request,
-    stage: Optional[str] = None,
+    stage: str | None = None,
     x_api_key: str = Header(..., alias="X-API-Key"),
     _: None = Depends(check_rate_limit)
 ):
@@ -1472,11 +1469,11 @@ class InferenceRequest(BaseModel):
     device: str = Field("cuda:0", description="Device to use")
     half: bool = Field(False, description="Use FP16 inference")
     tta: bool = Field(False, description="Enable test-time augmentation")
-    tta_scales: Optional[List[float]] = Field(
+    tta_scales: list[float] | None = Field(
         None,
         description="TTA scale factors, e.g. [0.83, 1.0, 1.17]"
     )
-    tta_flips: Optional[List[int]] = Field(
+    tta_flips: list[int] | None = Field(
         None,
         description="TTA flip modes: 0=none, 1=horizontal flip"
     )
@@ -1484,9 +1481,9 @@ class InferenceRequest(BaseModel):
 
 class EnsembleRequest(BaseModel):
     """Model ensemble inference request."""
-    model_paths: List[str] = Field(..., description="List of model paths for ensemble")
-    weights: Optional[List[float]] = Field(None, description="Per-model weights, normalized automatically")
-    source: Optional[str] = Field(None, description="Image path or URL")
+    model_paths: list[str] = Field(..., description="List of model paths for ensemble")
+    weights: list[float] | None = Field(None, description="Per-model weights, normalized automatically")
+    source: str | None = Field(None, description="Image path or URL")
     conf: float = Field(0.25, description="Confidence threshold")
     iou_threshold: float = Field(0.45, description="IoU threshold for NMS")
     max_det: int = Field(300, description="Maximum detections per model")
@@ -1497,7 +1494,7 @@ class InferenceResponse(BaseModel):
     """Inference response."""
     task_id: str
     status: str
-    detections: List[dict]
+    detections: list[dict]
     inference_time_ms: float
     model_name: str
     image_size: tuple
@@ -1599,12 +1596,12 @@ class EnsembleResponse(BaseModel):
     """Ensemble inference response."""
     task_id: str
     status: str
-    detections: List[dict]
+    detections: list[dict]
     total_boxes: int
     merged_boxes: int
-    per_model_counts: Dict[str, int]
+    per_model_counts: dict[str, int]
     inference_time_ms: float
-    ensemble_weights: List[float]
+    ensemble_weights: list[float]
     timestamp: str
 
 
@@ -1731,7 +1728,7 @@ async def select_active_learning_samples(
             detail="Invalid API key"
         )
 
-    from src.training.active_learner import ActiveLearningPipeline, ActiveLearningConfig
+    from src.training.active_learner import ActiveLearningConfig, ActiveLearningPipeline
     pipeline = ActiveLearningPipeline(ActiveLearningConfig(
         strategy=request.strategy,
         top_k=request.top_k,
@@ -1841,10 +1838,10 @@ class QualityFilterRequest(BaseModel):
     filter_low_confidence: bool = Field(False, description="Apply low-confidence annotation filter")
     min_confidence: float = Field(0.3, description="Minimum confidence threshold")
     mine_hard_negatives: bool = Field(False, description="Run hard negative mining")
-    hard_negative_model: Optional[str] = Field(None, description="Model path for hard negative mining")
+    hard_negative_model: str | None = Field(None, description="Model path for hard negative mining")
     hard_negative_conf: float = Field(0.1, description="Confidence threshold for hard negative detection")
-    hard_negative_image_dir: Optional[str] = Field(None, description="Image directory for hard negative mining")
-    output_dir: Optional[str] = Field(None, description="Output directory for filtered labels (default: in-place)")
+    hard_negative_image_dir: str | None = Field(None, description="Image directory for hard negative mining")
+    output_dir: str | None = Field(None, description="Output directory for filtered labels (default: in-place)")
 
 
 @router.post("/data/filter-quality")
@@ -1902,13 +1899,13 @@ async def filter_dataset_quality(
         total_original = 0
         total_kept = 0
         total_removed = 0
-        all_issues: List[str] = []
+        all_issues: list[str] = []
 
         for ld in label_dirs:
             original_count = 0
             kept_count = 0
             removed_count = 0
-            issues: List[str] = []
+            issues: list[str] = []
 
             # Count original boxes
             for lbl_file in ld.glob("*.txt"):
@@ -1954,7 +1951,7 @@ async def filter_dataset_quality(
         quality_score = total_kept / total_original if total_original > 0 else 1.0
 
         # Hard negative mining
-        hard_negatives: List[str] = []
+        hard_negatives: list[str] = []
         if request.mine_hard_negatives:
             model_path = request.hard_negative_model
             image_dir = request.hard_negative_image_dir or str(dataset_path / "images")
@@ -2036,7 +2033,7 @@ class DriftCheckRequest(BaseModel):
     model_name: str = Field(..., description="Model name being monitored")
     reference_image_dir: str = Field(..., description="Path to reference (training) image directory")
     current_image_dir: str = Field(..., description="Path to current production image directory")
-    metrics_history: Optional[List[float]] = Field(
+    metrics_history: list[float] | None = Field(
         None,
         description="Optional historical mAP values for concept drift detection"
     )
@@ -2049,7 +2046,7 @@ class DriftResponse(BaseModel):
     data_drift_score: float
     concept_drift_detected: bool
     recommendation: str
-    feature_drift: Dict[str, float]
+    feature_drift: dict[str, float]
     timestamp: str
 
 
@@ -2146,12 +2143,12 @@ class EdgeConfigResponse(BaseModel):
     stream_count: int
     workspace_mb: int
     recommended_format: str
-    fallback_formats: List[str]
+    fallback_formats: list[str]
     precision: str
     dynamic_batch: bool
     imgsz: int
-    export_kwargs: Dict[str, Any]
-    notes: List[str]
+    export_kwargs: dict[str, Any]
+    notes: list[str]
 
 
 @router.get("/deploy/edge-config/{model_name}", response_model=EdgeConfigResponse)
@@ -2242,7 +2239,7 @@ class ContinuousTrainingRequest(BaseModel):
 class DriftCheckRequest(BaseModel):
     current_map: float = Field(..., description="Current production model mAP (0.0-1.0)")
     historical_avg: float = Field(..., description="Long-running average mAP (0.0-1.0)")
-    threshold: Optional[float] = Field(None, description="Override drift threshold")
+    threshold: float | None = Field(None, description="Override drift threshold")
 
 
 class ABTestStartRequest(BaseModel):
@@ -2253,8 +2250,8 @@ class ABTestStartRequest(BaseModel):
 
 
 class RollbackRequest(BaseModel):
-    current_model: Optional[str] = Field(None, description="Model to replace")
-    previous_model: Optional[str] = Field(None, description="Model to restore")
+    current_model: str | None = Field(None, description="Model to replace")
+    previous_model: str | None = Field(None, description="Model to restore")
 
 
 @router.post("/pipeline/continuous/start")

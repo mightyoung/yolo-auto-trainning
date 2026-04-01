@@ -8,7 +8,6 @@ Key pattern in Redis: training:task:{task_id}
 
 import json
 import threading
-from typing import Optional, Dict
 
 from ..gateway import get_redis_client
 
@@ -18,7 +17,7 @@ _tasks_cache: dict = {}
 _tasks_lock = threading.Lock()
 
 
-def _task_get(task_id: str) -> Optional[dict]:
+def _task_get(task_id: str) -> dict | None:
     """Read a task. L1 dict cache, then Redis."""
     with _tasks_lock:
         if task_id in _tasks_cache:
@@ -65,11 +64,11 @@ def _task_del(task_id: str) -> None:
 
 # Cancellation registry: task_id -> threading.Event
 # Stored separately from task records so Event objects aren't JSON-serialised.
-_cancel_events: Dict[str, threading.Event] = {}
+_cancel_events: dict[str, threading.Event] = {}
 _cancel_lock = threading.Lock()
 
 
-def get_cancel_event(task_id: str) -> Optional[threading.Event]:
+def get_cancel_event(task_id: str) -> threading.Event | None:
     """Get cancellation event for a task."""
     with _cancel_lock:
         return _cancel_events.get(task_id)

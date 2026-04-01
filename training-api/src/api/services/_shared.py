@@ -19,8 +19,7 @@ import sys
 import time
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List, Optional
-
+from typing import Any, Optional
 
 # Add training-api/src to sys.path so 'src' package resolves here (not legacy src/)
 # This prevents legacy /home/wangxin/yolo-auto-training/src/ from shadowing training-api/src/
@@ -30,16 +29,16 @@ if str(_training_api_src_root) not in sys.path:
 
 # Import task store
 from ..store.task_store import (
-    _tasks_cache,
-    _tasks_lock,
-    _task_get,  # noqa: F401 - re-exported for routes
-    _task_set,
     _cancel_events,
     _cancel_lock,
+    _task_get,  # noqa: F401 - re-exported for routes
+    _task_set,
+    _tasks_cache,
+    _tasks_lock,
 )
 
 # Module-level retry circuit breaker: task_id -> retry count
-_retry_counts: Dict[str, int] = {}
+_retry_counts: dict[str, int] = {}
 
 
 # ==================== Dynamic Training Manager ====================
@@ -92,16 +91,20 @@ def _run_training_sync(
     output_dir: str,
     device: str,
     auto_export: bool = True,
-    resume_checkpoint: Optional[str] = None,
-    augmentation_preset: Optional[str] = None,
+    resume_checkpoint: str | None = None,
+    augmentation_preset: str | None = None,
     _loop: Optional["asyncio.AbstractEventLoop"] = None,
-    hpo_params: Optional[Dict[str, Any]] = None,
-    resume_from: Optional[str] = None,
+    hpo_params: dict[str, Any] | None = None,
+    resume_from: str | None = None,
 ) -> None:
     """Run YOLO training synchronously. Called from background task."""
     # Import here to avoid import-time errors on systems without GPU
-    from src.training.runner import YOLOTrainer, TrainingCancelled
-    from src.training.config import DEFAULT_TRAINING_CONFIG, DEFAULT_PLATEAU_CONFIG, AUGMENTATION_PRESETS
+    from src.training.config import (
+        AUGMENTATION_PRESETS,
+        DEFAULT_PLATEAU_CONFIG,
+        DEFAULT_TRAINING_CONFIG,
+    )
+    from src.training.runner import TrainingCancelled, YOLOTrainer
 
     max_retries = 2
     retry_delay = 180  # 3 minutes
@@ -340,10 +343,10 @@ def _run_export_sync(
     model_path: str,
     platform: str,
     imgsz: int,
-    formats: Optional[List[str]] = None,
+    formats: list[str] | None = None,
     auto_benchmark: bool = False,
     int8_quantize: bool = False,
-    calibration_data_dir: Optional[str] = None,
+    calibration_data_dir: str | None = None,
 ) -> None:
     """Run model export synchronously. Called from background task."""
     from src.deployment.exporter import ModelExporter
@@ -397,7 +400,7 @@ def _run_export_sync(
             model_path_obj = Path(model_path)
 
             # Resolve calibration data directory
-            calib_dir: Optional[Path] = None
+            calib_dir: Path | None = None
             if calibration_data_dir:
                 calib_dir = Path(calibration_data_dir)
             elif int8_quantize:
@@ -500,7 +503,7 @@ def _run_hpo_sync(
     device: str,
     num_samples: int = 20,
     max_concurrent: int = 1,
-    fixed_params: Optional[dict] = None,
+    fixed_params: dict | None = None,
 ) -> None:
     """Run HPO synchronously using Ray Tune."""
     logging.info(f"[{task_id}] Starting HPO: model={model}, data={data_yaml}, samples={num_samples}, max_concurrent={max_concurrent}")
@@ -557,11 +560,11 @@ def _run_curriculum_sync(
     output_dir: str,
     model: str = "yolo11m",
     device: str = "cuda:0",
-    curriculum_stages: Optional[list] = None,
+    curriculum_stages: list | None = None,
 ) -> None:
     """Run 3-stage progressive curriculum training."""
-    from src.training.runner import YOLOTrainer
     from src.training.config import DEFAULT_TRAINING_CONFIG
+    from src.training.runner import YOLOTrainer
 
     if curriculum_stages is None:
         curriculum_stages = [

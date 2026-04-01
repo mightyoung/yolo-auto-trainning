@@ -7,10 +7,10 @@ Manages model versions, storage, and retrieval.
 
 import json
 import shutil
-from pathlib import Path
-from typing import List, Optional, Dict, Any
-from datetime import datetime
 import uuid
+from datetime import datetime
+from pathlib import Path
+from typing import Any
 
 
 class ModelManager:
@@ -34,7 +34,7 @@ class ModelManager:
         self,
         model_path: str,
         task_id: str,
-        metadata: Optional[Dict[str, Any]] = None
+        metadata: dict[str, Any] | None = None
     ) -> str:
         """
         Save a trained model to storage.
@@ -73,7 +73,7 @@ class ModelManager:
 
         return model_id
 
-    def get_model(self, task_id: str) -> Optional[Dict[str, Any]]:
+    def get_model(self, task_id: str) -> dict[str, Any] | None:
         """
         Get model metadata by task ID.
 
@@ -89,10 +89,10 @@ class ModelManager:
         if not metadata_path.exists():
             return None
 
-        with open(metadata_path, 'r') as f:
+        with open(metadata_path) as f:
             return json.load(f)
 
-    def list_models(self, limit: int = 100) -> List[Dict[str, Any]]:
+    def list_models(self, limit: int = 100) -> list[dict[str, Any]]:
         """
         List all models.
 
@@ -110,7 +110,7 @@ class ModelManager:
 
             metadata_path = task_dir / "metadata.json"
             if metadata_path.exists():
-                with open(metadata_path, 'r') as f:
+                with open(metadata_path) as f:
                     models.append(json.load(f))
 
             if len(models) >= limit:

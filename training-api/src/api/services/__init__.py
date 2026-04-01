@@ -7,8 +7,8 @@ simplified alternatives for reference/extraction in the future.
 
 from .training_service import (
     DynamicTrainingManager,
-    _run_training_sync,
     _run_curriculum_sync,
+    _run_training_sync,
 )
 
 __all__ = [

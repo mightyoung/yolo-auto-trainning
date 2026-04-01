@@ -11,13 +11,13 @@ import logging
 import time
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Optional
 
 from ..store.task_store import (
-    _tasks_cache,
-    _task_set,
     _cancel_events,
     _cancel_lock,
+    _task_set,
+    _tasks_cache,
 )
 
 
@@ -67,16 +67,20 @@ def _run_training_sync(
     output_dir: str,
     device: str,
     auto_export: bool = True,
-    resume_checkpoint: Optional[str] = None,
-    augmentation_preset: Optional[str] = None,
+    resume_checkpoint: str | None = None,
+    augmentation_preset: str | None = None,
     _loop: Optional["asyncio.AbstractEventLoop"] = None,
-    hpo_params: Optional[Dict[str, Any]] = None,
-    resume_from: Optional[str] = None,
+    hpo_params: dict[str, Any] | None = None,
+    resume_from: str | None = None,
 ) -> None:
     """Run YOLO training synchronously. Called from background task."""
     # Import here to avoid import-time errors on systems without GPU
-    from src.training.runner import YOLOTrainer, TrainingCancelled
-    from src.training.config import DEFAULT_TRAINING_CONFIG, DEFAULT_PLATEAU_CONFIG, AUGMENTATION_PRESETS
+    from src.training.config import (
+        AUGMENTATION_PRESETS,
+        DEFAULT_PLATEAU_CONFIG,
+        DEFAULT_TRAINING_CONFIG,
+    )
+    from src.training.runner import TrainingCancelled, YOLOTrainer
 
     max_retries = 2
     retry_delay = 180  # 3 minutes
@@ -255,7 +259,7 @@ def _run_curriculum_sync(
     output_dir: str,
     model: str = "yolo11m",
     device: str = "cuda:0",
-    curriculum_stages: Optional[list] = None,
+    curriculum_stages: list | None = None,
 ) -> None:
     """Run 3-stage progressive curriculum training.
 
@@ -263,8 +267,8 @@ def _run_curriculum_sync(
     Stage 2: full_training (60% epochs, 1280px, medium aug) - main training
     Stage 3: fine_tuning (20% epochs, 1280px, weak aug) - polish
     """
-    from src.training.runner import YOLOTrainer
     from src.training.config import DEFAULT_TRAINING_CONFIG
+    from src.training.runner import YOLOTrainer
 
     if curriculum_stages is None:
         curriculum_stages = [

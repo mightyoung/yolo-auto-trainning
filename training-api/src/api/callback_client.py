@@ -4,10 +4,11 @@ Callback Client - Send task completion notifications to Business API
 This module provides a client for notifying the Business API when tasks complete.
 """
 
-from typing import Optional, Dict, Any
+from datetime import datetime
+from typing import Any
+
 import httpx
 from pydantic import BaseModel
-from datetime import datetime
 
 
 class CallbackClient:
@@ -31,7 +32,7 @@ class CallbackClient:
         self.api_key = api_key
         self.timeout = timeout
 
-    def _get_headers(self) -> Dict[str, str]:
+    def _get_headers(self) -> dict[str, str]:
         """Get headers for API requests."""
         return {
             "Authorization": f"Bearer {self.api_key}",
@@ -42,10 +43,10 @@ class CallbackClient:
         self,
         task_id: str,
         status: str,
-        metrics: Optional[Dict[str, float]] = None,
-        model_path: Optional[str] = None,
-        error: Optional[str] = None
-    ) -> Dict[str, Any]:
+        metrics: dict[str, float] | None = None,
+        model_path: str | None = None,
+        error: str | None = None
+    ) -> dict[str, Any]:
         """
         Notify Business API that a task has completed.
 
@@ -90,7 +91,7 @@ class TaskCallback(BaseModel):
     """Task callback model for sending to Business API."""
     task_id: str
     status: str  # completed, failed
-    metrics: Optional[Dict[str, float]] = None
-    model_path: Optional[str] = None
-    error: Optional[str] = None
-    completed_at: Optional[str] = None
+    metrics: dict[str, float] | None = None
+    model_path: str | None = None
+    error: str | None = None
+    completed_at: str | None = None
