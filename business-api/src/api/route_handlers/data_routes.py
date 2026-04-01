@@ -1,13 +1,12 @@
 """Data discovery routes for Business API."""
 
 import asyncio
-from typing import Optional, List
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from pydantic import BaseModel, Field
 
-from ..auth import get_current_user, CurrentUser, check_rate_limit
 from ..audit import audit_logger
+from ..auth import CurrentUser, check_rate_limit, get_current_user
 from ..exceptions import ExternalDependencyError
 
 router = APIRouter()
@@ -17,14 +16,14 @@ class DatasetSearchRequest(BaseModel):
     """Dataset search request."""
     query: str = Field(..., description="Search query")
     max_results: int = Field(10, description="Maximum results")
-    sources: Optional[List[str]] = Field(None, description="Data sources to search")
-    min_images: Optional[int] = Field(None, description="Minimum images")
-    license: Optional[str] = Field(None, description="License filter")
+    sources: list[str] | None = Field(None, description="Data sources to search")
+    min_images: int | None = Field(None, description="Minimum images")
+    license: str | None = Field(None, description="License filter")
 
 
 class DatasetSearchResponse(BaseModel):
     """Dataset search response."""
-    datasets: List[dict]
+    datasets: list[dict]
     total: int
     query_time_ms: int = 0
 

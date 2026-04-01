@@ -7,16 +7,16 @@ Contains:
 - Task orchestration endpoints
 """
 
-from typing import Optional, List
-from fastapi import APIRouter, HTTPException, BackgroundTasks, status, Depends, Request
-from pydantic import BaseModel, Field
+import sys
 import uuid
 from datetime import datetime
-import sys
 from pathlib import Path
 
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request, status
+from pydantic import BaseModel, Field
+
 # Import authentication from auth module
-from .auth import get_current_user, CurrentUser, check_rate_limit
+from .auth import CurrentUser, check_rate_limit, get_current_user
 
 # Add project root for orchestration import
 _project_root = Path(__file__).parent.parent.parent
@@ -29,8 +29,8 @@ if str(_project_root) not in sys.path:
 class AgentTaskRequest(BaseModel):
     """Agent task request."""
     task: str = Field(..., description="Task description")
-    context: Optional[dict] = Field(None, description="Additional context")
-    agents: Optional[List[str]] = Field(
+    context: dict | None = Field(None, description="Additional context")
+    agents: list[str] | None = Field(
         None,
         description="Specific agents to use"
     )
@@ -44,7 +44,7 @@ class AgentTaskResponse(BaseModel):
     """Agent task response."""
     task_id: str
     status: str
-    result: Optional[dict] = None
+    result: dict | None = None
     message: str
 
 
@@ -52,9 +52,9 @@ class AgentStatusResponse(BaseModel):
     """Agent status response."""
     task_id: str
     status: str
-    current_agent: Optional[str] = None
+    current_agent: str | None = None
     progress: float = 0.0
-    result: Optional[dict] = None
+    result: dict | None = None
 
 
 class TaskRequest(BaseModel):
@@ -72,12 +72,12 @@ class AgentStatusResponse(BaseModel):
     progress: float
     current_agent: str = ""
     phase1_result: str = ""
-    error: Optional[str] = None
+    error: str | None = None
 
 
 class ConfirmRequest(BaseModel):
     approved: bool = True
-    overrides: Optional[dict] = None
+    overrides: dict | None = None
 
 
 # ==================== Create Router ====================

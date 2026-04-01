@@ -7,7 +7,7 @@ Exports:
 - auth: Authentication utilities
 """
 
-from .audit import audit_logger, AuditLogger, get_audit_logger
+from .audit import AuditLogger, audit_logger, get_audit_logger
 from .auth import CurrentUser, get_current_user, get_optional_user, require_role
 
 __all__ = [

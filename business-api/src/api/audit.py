@@ -18,11 +18,11 @@ Usage:
         audit.log("action", user_id, "resource", request)
 """
 
+import json
 import logging
 from datetime import datetime, timezone
-from typing import Optional
+
 from fastapi import Request
-import json
 
 
 class AuditLogger:
@@ -44,10 +44,10 @@ class AuditLogger:
     def log(
         self,
         action: str,
-        user_id: Optional[str],
+        user_id: str | None,
         resource: str,
-        request: Optional[Request] = None,
-        details: Optional[dict] = None,
+        request: Request | None = None,
+        details: dict | None = None,
         status: str = "success"
     ) -> None:
         """
@@ -106,8 +106,8 @@ class AuditLogger:
         user_id: str,
         action: str,
         status: str,
-        request: Optional[Request] = None,
-        details: Optional[dict] = None
+        request: Request | None = None,
+        details: dict | None = None
     ) -> None:
         """
         Log authentication-related events.
@@ -133,8 +133,8 @@ class AuditLogger:
         user_id: str,
         action: str,
         task_id: str,
-        request: Optional[Request] = None,
-        details: Optional[dict] = None
+        request: Request | None = None,
+        details: dict | None = None
     ) -> None:
         """
         Log training-related events.
@@ -160,8 +160,8 @@ class AuditLogger:
         user_id: str,
         dataset_id: str,
         action: str,
-        request: Optional[Request] = None,
-        details: Optional[dict] = None
+        request: Request | None = None,
+        details: dict | None = None
     ) -> None:
         """
         Log dataset/data access events.
@@ -187,8 +187,8 @@ class AuditLogger:
         user_id: str,
         model_name: str,
         action: str,
-        request: Optional[Request] = None,
-        details: Optional[dict] = None
+        request: Request | None = None,
+        details: dict | None = None
     ) -> None:
         """
         Log model registry operations.
@@ -211,12 +211,12 @@ class AuditLogger:
 
     def log_api_call(
         self,
-        user_id: Optional[str],
+        user_id: str | None,
         endpoint: str,
         method: str,
         status_code: int,
-        request: Optional[Request] = None,
-        details: Optional[dict] = None
+        request: Request | None = None,
+        details: dict | None = None
     ) -> None:
         """
         Log general API calls.

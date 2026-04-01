@@ -2,12 +2,10 @@
 
 from __future__ import annotations
 
-from datetime import datetime
 import json
-from typing import Optional
+from datetime import datetime
 
 from .task_models import ExportStatusResponse, TrainStatusResponse
-
 
 TASK_TTL_SECONDS = 7 * 24 * 60 * 60
 
@@ -155,7 +153,7 @@ def migrate_task_record(task_data: dict) -> dict:
     return task_data
 
 
-def normalize_task_record(task_data: Optional[dict]) -> Optional[dict]:
+def normalize_task_record(task_data: dict | None) -> dict | None:
     """Normalize legacy task records into registry + execution-link shape.
 
     Also applies schema migration if needed.
@@ -195,7 +193,7 @@ def build_task_record(
     user_id: str,
     submission: dict,
     registry_status: str = "submitted",
-    links: Optional[dict] = None,
+    links: dict | None = None,
 ) -> dict:
     """Build a business-side task registry record."""
     record_links = dict(links or {})
@@ -234,7 +232,7 @@ def store_task_in_redis(redis_client, task_data: dict) -> None:
     redis_client.sadd(f"user:{user_id}:tasks", task_id)
 
 
-def get_task_from_redis(redis_client, task_id: str) -> Optional[dict]:
+def get_task_from_redis(redis_client, task_id: str) -> dict | None:
     """Get task from Redis."""
     if redis_client is None:
         return None
@@ -261,7 +259,7 @@ def get_user_tasks_from_redis(redis_client, user_id: str) -> list[dict]:
     return tasks
 
 
-def verify_task_ownership(redis_client, task_id: str, user_id: str) -> Optional[dict]:
+def verify_task_ownership(redis_client, task_id: str, user_id: str) -> dict | None:
     """Verify that a task belongs to the user."""
     task = get_task_from_redis(redis_client, task_id)
     if task is None or task.get("user_id") != user_id:
@@ -280,7 +278,7 @@ def delete_task_from_redis(redis_client, task_id: str, user_id: str) -> bool:
     return True
 
 
-def build_result_summary(task: dict) -> Optional[dict]:
+def build_result_summary(task: dict) -> dict | None:
     """Build a stable summary for synchronous business-owned task results."""
     task = normalize_task_record(task)
     if task.get("task_type") not in {"analysis", "report"}:
@@ -331,7 +329,7 @@ async def get_aggregated_task(
     training_client,
     task_id: str,
     user_id: str,
-) -> Optional[dict]:
+) -> dict | None:
     """Load a task registry record and enrich it with execution state."""
     task = verify_task_ownership(redis_client, task_id, user_id)
     if task is None:

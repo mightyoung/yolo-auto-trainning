@@ -8,20 +8,20 @@ This API runs on local/terminal and handles:
 - Task Scheduling (delegates to Training API)
 """
 
-from contextlib import asynccontextmanager
-from typing import Optional
-import os
 import asyncio
+import os
+from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 
 from dotenv import load_dotenv
+
 load_dotenv()  # Load business-api/.env
 
-from fastapi import FastAPI, Request, HTTPException
+import redis
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.responses import Response
-import redis
 
 # JWT imports
 try:
@@ -65,16 +65,16 @@ class RuntimeSettings:
         return os.getenv("REDIS_URL", "redis://localhost:6379/0")
 
     @property
-    def REDIS_PASSWORD(self) -> Optional[str]:
+    def REDIS_PASSWORD(self) -> str | None:
         return os.getenv("REDIS_PASSWORD")
 
     # Training API settings
     @property
-    def TRAINING_API_URL(self) -> Optional[str]:
+    def TRAINING_API_URL(self) -> str | None:
         return os.getenv("TRAINING_API_URL")
 
     @property
-    def TRAINING_API_KEY(self) -> Optional[str]:
+    def TRAINING_API_KEY(self) -> str | None:
         return os.getenv("TRAINING_API_KEY")
 
     # CORS
@@ -205,15 +205,15 @@ app.add_middleware(SecurityHeadersMiddleware)
 
 # ==================== Routes ====================
 
-from .route_handlers import (
-    data_router,
-    train_router,
-    deploy_router,
-    callback_router,
-    analysis_router,
-    queue_router,
-)
 from .agent_routes import agent_router
+from .route_handlers import (
+    analysis_router,
+    callback_router,
+    data_router,
+    deploy_router,
+    queue_router,
+    train_router,
+)
 
 # Register routers
 app.include_router(data_router, prefix="/api/v1/data", tags=["Data"])
@@ -257,8 +257,8 @@ async def health_check(request: Request):
 @app.get("/metrics")
 async def metrics():
     """Prometheus metrics endpoint."""
-    from prometheus_client import generate_latest, CONTENT_TYPE_LATEST
     from fastapi.responses import Response
+    from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
     return Response(
         content=generate_latest(),
         media_type=CONTENT_TYPE_LATEST

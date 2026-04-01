@@ -3,12 +3,11 @@
 Endpoints for managing MLflow model registry.
 """
 
-from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
 
-from ..auth import get_current_user, CurrentUser, check_rate_limit
+from ..auth import CurrentUser, check_rate_limit, get_current_user
 
 router = APIRouter()
 
@@ -19,7 +18,7 @@ class ModelCreateRequest(BaseModel):
     """Create registered model request."""
     name: str
     description: str = ""
-    tags: Optional[dict] = {}
+    tags: dict | None = {}
 
 
 class ModelTransitionRequest(BaseModel):

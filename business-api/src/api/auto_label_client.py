@@ -6,8 +6,9 @@ This module provides client for calling Auto Label service on GPU server.
 """
 
 import os
+from typing import Any
+
 import requests
-from typing import List, Dict, Any
 
 
 class AutoLabelClient:
@@ -47,10 +48,10 @@ class AutoLabelClient:
     def submit_labeling_job(
         self,
         input_folder: str,
-        classes: List[str],
+        classes: list[str],
         base_model: str = "grounded_sam",
         conf_threshold: float = 0.3
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         """
         Submit an auto-labeling job.
 
@@ -85,7 +86,7 @@ class AutoLabelClient:
     def get_labeling_status(
         self,
         task_id: str
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         """
         Get labeling job status.
 
@@ -114,7 +115,7 @@ class AutoLabelClient:
         target_model: str = "yolov8",
         model_size: str = "n",
         epochs: int = 100
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         """
         Submit a model distillation job.
 

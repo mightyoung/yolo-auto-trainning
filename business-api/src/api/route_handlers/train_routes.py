@@ -5,35 +5,34 @@ import json
 import os
 import uuid
 from datetime import datetime
-from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks, Request
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
 
-from ..auth import get_current_user, CurrentUser, check_rate_limit
 from ..audit import audit_logger
-from ..task_registry import (
-    normalize_task_record,
-    build_task_record,
-    store_task_in_redis,
-    get_user_tasks_from_redis,
-    verify_task_ownership,
-    delete_task_from_redis,
-    attach_execution_snapshot,
-    get_aggregated_task,
-    build_result_summary,
-    build_training_status_response,
-)
-from ..task_models import (
-    TaskListResponse,
-    TaskDetailResponse,
-    TrainStatusResponse,
-)
+from ..auth import CurrentUser, check_rate_limit, get_current_user
 from ..exceptions import (
     ExternalDependencyError,
     StateConflictError,
     task_not_found,
     task_not_owned,
+)
+from ..task_models import (
+    TaskDetailResponse,
+    TaskListResponse,
+    TrainStatusResponse,
+)
+from ..task_registry import (
+    attach_execution_snapshot,
+    build_result_summary,
+    build_task_record,
+    build_training_status_response,
+    delete_task_from_redis,
+    get_aggregated_task,
+    get_user_tasks_from_redis,
+    normalize_task_record,
+    store_task_in_redis,
+    verify_task_ownership,
 )
 
 # Import model registry routes to include in this router
@@ -62,9 +61,9 @@ class TrainRequest(BaseModel):
 
 class AdjustRequest(BaseModel):
     """Request to adjust training parameters mid-run (plateau-breaking)."""
-    lr0: Optional[float] = Field(None, description="New initial learning rate")
-    augmentation_preset: Optional[str] = Field(None, description="Augmentation preset: balanced|strong")
-    resume_from: Optional[str] = Field(None, description="Path to best.pt from previous run")
+    lr0: float | None = Field(None, description="New initial learning rate")
+    augmentation_preset: str | None = Field(None, description="Augmentation preset: balanced|strong")
+    resume_from: str | None = Field(None, description="Path to best.pt from previous run")
     additional_epochs: int = Field(0, description="Extra epochs to add to original schedule")
 
 
@@ -74,7 +73,7 @@ class TrainResponse(BaseModel):
     status: str
     message: str
     gpu_server: str
-    estimated_time_minutes: Optional[int] = None
+    estimated_time_minutes: int | None = None
 
 
 # ==================== Training Endpoints ====================

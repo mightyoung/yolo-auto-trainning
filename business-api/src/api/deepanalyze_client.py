@@ -6,9 +6,10 @@ This module provides integration with DeepAnalyze API for data analysis.
 """
 
 import os
-import requests
-from typing import Optional, List, Dict, Any
 from pathlib import Path
+from typing import Any
+
+import requests
 
 
 class DeepAnalyzeClient:
@@ -51,7 +52,7 @@ class DeepAnalyzeClient:
         except Exception:
             return False
 
-    def upload_file(self, file_path: str) -> Optional[str]:
+    def upload_file(self, file_path: str) -> str | None:
         """
         Upload a file for analysis.
 
@@ -78,11 +79,11 @@ class DeepAnalyzeClient:
     def analyze(
         self,
         prompt: str,
-        file_ids: List[str] = None,
+        file_ids: list[str] = None,
         thread_id: str = None,
         temperature: float = 0.4,
         stream: bool = False
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         """
         Send analysis request to DeepAnalyze.
 
@@ -136,7 +137,7 @@ class DeepAnalyzeClient:
         self,
         dataset_path: str,
         analysis_type: str = "quality"
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         """
         Analyze a dataset with predefined analysis prompts.
 
@@ -180,8 +181,8 @@ class DeepAnalyzeClient:
     def generate_report(
         self,
         data_description: str,
-        analysis_goals: List[str]
-    ) -> Dict[str, Any]:
+        analysis_goals: list[str]
+    ) -> dict[str, Any]:
         """
         Generate a comprehensive data science report.
 

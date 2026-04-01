@@ -1,11 +1,10 @@
 """Callback routes for Business API - receives callbacks from Training API."""
 
-from typing import Optional
 
 from fastapi import APIRouter, Depends
 from pydantic import BaseModel
 
-from ..auth import get_current_user, CurrentUser
+from ..auth import CurrentUser, get_current_user
 
 router = APIRouter()
 
@@ -14,10 +13,10 @@ class TaskCallbackRequest(BaseModel):
     """Task callback from training API."""
     task_id: str
     status: str  # completed, failed
-    metrics: Optional[dict] = None
-    model_path: Optional[str] = None
-    error: Optional[str] = None
-    completed_at: Optional[str] = None
+    metrics: dict | None = None
+    model_path: str | None = None
+    error: str | None = None
+    completed_at: str | None = None
 
 
 class TaskCallbackResponse(BaseModel):

@@ -10,15 +10,14 @@ Contains:
 - API key verification
 """
 
-from typing import Optional
 import os
 import secrets
+import time
 from datetime import datetime, timedelta, timezone
 
 import redis
-from fastapi import Depends, HTTPException, status, Request
-from fastapi.security import APIKeyHeader, HTTPBearer, HTTPAuthorizationCredentials
-import time
+from fastapi import Depends, HTTPException, Request, status
+from fastapi.security import APIKeyHeader, HTTPAuthorizationCredentials, HTTPBearer
 
 # JWT imports
 try:
@@ -118,7 +117,7 @@ def verify_api_key(provided_key: str) -> bool:
 
 async def get_current_user(
     credentials: HTTPAuthorizationCredentials = Depends(BEARER_TOKEN),
-    api_key: Optional[str] = Depends(API_KEY_HEADER),
+    api_key: str | None = Depends(API_KEY_HEADER),
 ) -> CurrentUser:
     """
     Get current user from JWT token or API key.
@@ -153,9 +152,9 @@ async def get_current_user(
 
 
 async def get_optional_user(
-    credentials: Optional[HTTPAuthorizationCredentials] = Depends(BEARER_TOKEN),
-    api_key: Optional[str] = Depends(API_KEY_HEADER),
-) -> Optional[CurrentUser]:
+    credentials: HTTPAuthorizationCredentials | None = Depends(BEARER_TOKEN),
+    api_key: str | None = Depends(API_KEY_HEADER),
+) -> CurrentUser | None:
     """Get current user if authenticated, otherwise return None (optional auth)."""
     try:
         return await get_current_user(credentials, api_key)

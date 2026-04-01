@@ -1,6 +1,6 @@
 """Task-facing request/response models for the Business API."""
 
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 from pydantic import BaseModel, Field
 
@@ -11,21 +11,21 @@ class TrainStatusResponse(BaseModel):
     task_id: str
     status: str
     progress: float
-    current_epoch: Optional[int] = None
-    total_epochs: Optional[int] = None
-    metrics: Optional[dict] = None
-    error: Optional[str] = None
-    live_mAP50: Optional[float] = None
-    lr_decay_triggered: Optional[bool] = None
-    lr_decay_signal: Optional[dict] = None
-    augment_boost_active: Optional[bool] = None
-    augment_boost_signal: Optional[dict] = None
-    data_expansion_requested: Optional[bool] = None
-    data_expansion_signal: Optional[dict] = None
-    strategies_triggered: Optional[list] = None
-    resubmit_count: Optional[int] = None
-    last_resubmitted_at: Optional[str] = None
-    resubmit_reason: Optional[str] = None
+    current_epoch: int | None = None
+    total_epochs: int | None = None
+    metrics: dict | None = None
+    error: str | None = None
+    live_mAP50: float | None = None
+    lr_decay_triggered: bool | None = None
+    lr_decay_signal: dict | None = None
+    augment_boost_active: bool | None = None
+    augment_boost_signal: dict | None = None
+    data_expansion_requested: bool | None = None
+    data_expansion_signal: dict | None = None
+    strategies_triggered: list | None = None
+    resubmit_count: int | None = None
+    last_resubmitted_at: str | None = None
+    resubmit_reason: str | None = None
 
 
 class ExportStatusResponse(BaseModel):
@@ -34,24 +34,24 @@ class ExportStatusResponse(BaseModel):
     task_id: str
     status: str
     progress: float = 0.0
-    model_path: Optional[str] = None
-    platform: Optional[str] = None
-    imgsz: Optional[int] = None
-    formats: Optional[List[str]] = None
-    int8_quantize: Optional[bool] = None
-    export_path: Optional[str] = None
-    error: Optional[str] = None
-    started_at: Optional[str] = None
-    completed_at: Optional[str] = None
+    model_path: str | None = None
+    platform: str | None = None
+    imgsz: int | None = None
+    formats: list[str] | None = None
+    int8_quantize: bool | None = None
+    export_path: str | None = None
+    error: str | None = None
+    started_at: str | None = None
+    completed_at: str | None = None
 
 
 class TaskExecutionSummaryResponse(BaseModel):
     """Stable execution summary for list/detail views."""
 
     status: str
-    progress: Optional[float] = None
-    updated_at: Optional[str] = None
-    error: Optional[str] = None
+    progress: float | None = None
+    updated_at: str | None = None
+    error: str | None = None
 
 
 class TaskRecordResponse(BaseModel):
@@ -63,19 +63,19 @@ class TaskRecordResponse(BaseModel):
     created_at: str
     status: str
     registry_status: str
-    submission: Dict[str, Any] = Field(default_factory=dict)
-    links: Dict[str, Any] = Field(default_factory=dict)
+    submission: dict[str, Any] = Field(default_factory=dict)
+    links: dict[str, Any] = Field(default_factory=dict)
     execution_summary: TaskExecutionSummaryResponse
-    execution: Optional[Dict[str, Any]] = None
-    result: Optional[Dict[str, Any]] = None
-    result_summary: Optional[Dict[str, Any]] = None
-    error: Optional[str] = None
+    execution: dict[str, Any] | None = None
+    result: dict[str, Any] | None = None
+    result_summary: dict[str, Any] | None = None
+    error: str | None = None
 
 
 class TaskListResponse(BaseModel):
     """Task list response with user isolation."""
 
-    tasks: List[TaskRecordResponse]
+    tasks: list[TaskRecordResponse]
     total: int
 
 

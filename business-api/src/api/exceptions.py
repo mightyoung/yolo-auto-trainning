@@ -23,7 +23,6 @@ Usage:
         raise HTTPException(status_code=400, detail=str(e))
 """
 
-from typing import Optional
 
 
 class BusinessError(Exception):
@@ -33,7 +32,7 @@ class BusinessError(Exception):
     not a system or external problem.
     """
 
-    def __init__(self, message: str, *, code: Optional[str] = None, details: Optional[dict] = None):
+    def __init__(self, message: str, *, code: str | None = None, details: dict | None = None):
         super().__init__(message)
         self.code = code or "BUSINESS_ERROR"
         self.details = details or {}
@@ -46,7 +45,7 @@ class ExternalDependencyError(Exception):
     The client may retry these after a delay.
     """
 
-    def __init__(self, message: str, *, service: Optional[str] = None, code: Optional[str] = None, retry_after: Optional[int] = None):
+    def __init__(self, message: str, *, service: str | None = None, code: str | None = None, retry_after: int | None = None):
         super().__init__(message)
         self.service = service
         self.code = code or "EXTERNAL_ERROR"
@@ -62,7 +61,7 @@ class StateConflictError(Exception):
     - Optimistic locking fails
     """
 
-    def __init__(self, message: str, *, resource_type: Optional[str] = None, resource_id: Optional[str] = None, current_state: Optional[str] = None):
+    def __init__(self, message: str, *, resource_type: str | None = None, resource_id: str | None = None, current_state: str | None = None):
         super().__init__(message)
         self.resource_type = resource_type
         self.resource_id = resource_id
@@ -77,7 +76,7 @@ class ConfigurationError(Exception):
     or the request includes invalid configuration.
     """
 
-    def __init__(self, message: str, *, config_key: Optional[str] = None, config_source: Optional[str] = None):
+    def __init__(self, message: str, *, config_key: str | None = None, config_source: str | None = None):
         super().__init__(message)
         self.config_key = config_key
         self.config_source = config_source

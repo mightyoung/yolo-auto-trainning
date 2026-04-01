@@ -2,17 +2,16 @@
 
 import os
 import uuid
-from typing import List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
 
-from ..auth import get_current_user, CurrentUser, check_rate_limit
+from ..auth import CurrentUser, check_rate_limit, get_current_user
+from ..exceptions import ExternalDependencyError
 from ..task_registry import (
     build_task_record,
     store_task_in_redis,
 )
-from ..exceptions import ExternalDependencyError
 
 router = APIRouter()
 
@@ -21,31 +20,31 @@ class DataAnalysisRequest(BaseModel):
     """Data analysis request for DeepAnalyze."""
     dataset_path: str = Field(..., description="Path to dataset file or directory")
     analysis_type: str = Field("quality", description="Type of analysis: quality, distribution, anomalies, full")
-    prompt: Optional[str] = Field(None, description="Custom analysis prompt")
+    prompt: str | None = Field(None, description="Custom analysis prompt")
 
 
 class DataAnalysisResponse(BaseModel):
     """Data analysis response."""
     task_id: str
     status: str
-    content: Optional[str] = None
-    files: Optional[List[dict]] = None
-    error: Optional[str] = None
+    content: str | None = None
+    files: list[dict] | None = None
+    error: str | None = None
 
 
 class ReportRequest(BaseModel):
     """Report generation request."""
     data_description: str = Field(..., description="Description of the data")
-    analysis_goals: List[str] = Field(..., description="List of analysis objectives")
+    analysis_goals: list[str] = Field(..., description="List of analysis objectives")
 
 
 class ReportResponse(BaseModel):
     """Report generation response."""
     task_id: str
     status: str
-    content: Optional[str] = None
-    files: Optional[List[dict]] = None
-    error: Optional[str] = None
+    content: str | None = None
+    files: list[dict] | None = None
+    error: str | None = None
 
 
 def get_redis_client(request: Request):

@@ -4,11 +4,12 @@ Training API Client - Communication layer between Business API and Training API
 This module provides a client for the training API running on the GPU server.
 """
 
-from typing import Optional, Dict, Any
-import httpx
 import json
 import uuid
 from datetime import datetime
+from typing import Any
+
+import httpx
 from pydantic import BaseModel
 
 
@@ -33,7 +34,7 @@ class TrainingAPIClient:
         self.api_key = api_key
         self.timeout = timeout
 
-    def _get_headers(self) -> Dict[str, str]:
+    def _get_headers(self) -> dict[str, str]:
         """Get headers for API requests."""
         return {
             "X-API-Key": self.api_key,
@@ -50,9 +51,9 @@ class TrainingAPIClient:
         output_dir: str = "/runs",
         batch: int = 16,
         device: str = "cuda:0",
-        augmentation_preset: Optional[str] = None,
-        resume_from: Optional[str] = None,
-    ) -> Dict[str, Any]:
+        augmentation_preset: str | None = None,
+        resume_from: str | None = None,
+    ) -> dict[str, Any]:
         """
         Submit a training job to the training API.
 
@@ -105,9 +106,9 @@ class TrainingAPIClient:
         output_dir: str = "/runs",
         batch: int = 16,
         device: str = "cuda:0",
-        augmentation_preset: Optional[str] = None,
-        resume_from: Optional[str] = None,
-    ) -> Dict[str, Any]:
+        augmentation_preset: str | None = None,
+        resume_from: str | None = None,
+    ) -> dict[str, Any]:
         """Synchronous version of start_training. Safe to call from background threads."""
         payload = {
             "task_id": task_id,
@@ -140,7 +141,7 @@ class TrainingAPIClient:
         data_yaml: str,
         n_trials: int = 50,
         epochs_per_trial: int = 50
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         """
         Submit an HPO job to the training API.
 
@@ -175,7 +176,7 @@ class TrainingAPIClient:
         model_path: str,
         platform: str = "jetson_orin",
         imgsz: int = 640
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         """
         Submit a model export job.
 
@@ -202,7 +203,7 @@ class TrainingAPIClient:
             response.raise_for_status()
             return response.json()
 
-    async def get_task_status(self, task_id: str) -> Dict[str, Any]:
+    async def get_task_status(self, task_id: str) -> dict[str, Any]:
         """
         Get the status of a training task.
 
@@ -220,7 +221,7 @@ class TrainingAPIClient:
             response.raise_for_status()
             return response.json()
 
-    def get_task_status_sync(self, task_id: str) -> Dict[str, Any]:
+    def get_task_status_sync(self, task_id: str) -> dict[str, Any]:
         """
         Synchronous version of get_task_status.
         Safe to call from background threads (no asyncio.run() needed).
@@ -244,10 +245,10 @@ class TrainingAPIClient:
         task_id: str,
         model_path: str,
         platform: str = "jetson_orin",
-        formats: Optional[list] = None,
+        formats: list | None = None,
         imgsz: int = 640,
         int8_quantize: bool = False,
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         """
         Synchronous version of start_export. Safe to call from background threads.
 
@@ -281,7 +282,7 @@ class TrainingAPIClient:
             response.raise_for_status()
             return response.json()
 
-    def get_export_status_sync(self, task_id: str) -> Dict[str, Any]:
+    def get_export_status_sync(self, task_id: str) -> dict[str, Any]:
         """
         Synchronous version of get export task status.
         Safe to call from background threads.
@@ -305,7 +306,7 @@ class TrainingAPIClient:
         model_path: str,
         platform: str = "jetson_orin",
         imgsz: int = 640,
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         """
         Submit a deployment by fetching the edge device configuration.
         The deployment is "registered" by retrieving the optimal config for the target device.
@@ -364,7 +365,7 @@ class TrainingAPIClient:
             except Exception:
                 return None
 
-    async def cancel_task(self, task_id: str) -> Dict[str, Any]:
+    async def cancel_task(self, task_id: str) -> dict[str, Any]:
         """
         Cancel a running task.
 
@@ -409,10 +410,10 @@ class TrainingAPIClient:
         stage1_min_map: float = 0.50,
         stage2_target_map: float = 0.90,
         stage2_min_for_stage3: float = 0.80,
-        stage1_overrides: Optional[dict] = None,
-        stage2_overrides: Optional[dict] = None,
-        stage3_overrides: Optional[dict] = None,
-    ) -> Dict[str, Any]:
+        stage1_overrides: dict | None = None,
+        stage2_overrides: dict | None = None,
+        stage3_overrides: dict | None = None,
+    ) -> dict[str, Any]:
         """Start a 3-stage curriculum training. Safe to call from background threads."""
         payload = {
             "task_id": task_id,
@@ -446,9 +447,9 @@ class TaskStatus(BaseModel):
     task_id: str
     status: str  # submitted, running, completed, failed
     progress: float = 0.0
-    current_epoch: Optional[int] = None
-    total_epochs: Optional[int] = None
-    metrics: Optional[Dict[str, float]] = None
-    error: Optional[str] = None
-    started_at: Optional[str] = None
-    completed_at: Optional[str] = None
+    current_epoch: int | None = None
+    total_epochs: int | None = None
+    metrics: dict[str, float] | None = None
+    error: str | None = None
+    started_at: str | None = None
+    completed_at: str | None = None

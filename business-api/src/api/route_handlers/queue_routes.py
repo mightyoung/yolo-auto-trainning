@@ -1,12 +1,11 @@
 """GPU Queue routes for Business API."""
 
 import uuid
-from typing import Optional
 
 from fastapi import APIRouter, Depends, Request
 from pydantic import BaseModel, Field
 
-from ..auth import get_current_user, CurrentUser, check_rate_limit
+from ..auth import CurrentUser, check_rate_limit, get_current_user
 
 router = APIRouter()
 
@@ -14,10 +13,10 @@ router = APIRouter()
 class QueueTaskRequest(BaseModel):
     """GPU task queue request."""
     data_yaml: str = Field(..., description="Path to dataset YAML")
-    output_dir: Optional[str] = Field("/home/wangxin/runs", description="Output directory")
+    output_dir: str | None = Field("/home/wangxin/runs", description="Output directory")
     device: str = Field("cuda:0", description="CUDA device")
     epochs_per_stage: int = Field(100, description="Epochs per curriculum stage")
-    model: Optional[str] = Field(None, description="Model override")
+    model: str | None = Field(None, description="Model override")
 
 
 @router.post("/enqueue")
