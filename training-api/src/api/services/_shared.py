@@ -32,7 +32,7 @@ if str(_training_api_src_root) not in sys.path:
 from ..store.task_store import (
     _tasks_cache,
     _tasks_lock,
-    _task_get,
+    _task_get,  # noqa: F401 - re-exported for routes
     _task_set,
     _cancel_events,
     _cancel_lock,
@@ -503,9 +503,6 @@ def _run_hpo_sync(
     fixed_params: Optional[dict] = None,
 ) -> None:
     """Run HPO synchronously using Ray Tune."""
-    from src.training.runner import YOLOTrainer
-    from src.training.config import HPOConfig, SanityCheckConfig
-
     logging.info(f"[{task_id}] Starting HPO: model={model}, data={data_yaml}, samples={num_samples}, max_concurrent={max_concurrent}")
 
     _tasks_cache[task_id]["status"] = "running"
@@ -513,7 +510,6 @@ def _run_hpo_sync(
     _task_set(task_id, _tasks_cache[task_id])
 
     try:
-        from ray import tune
         from src.training.hpo_ray import run_hpo_tuning
 
         # Run HPO
@@ -694,8 +690,6 @@ def _run_distill_sync(
     alpha: float = 0.5,
 ) -> None:
     """Run knowledge distillation synchronously."""
-    from src.training.runner import YOLOTrainer
-
     logging.info(f"[{task_id}] Starting distillation: teacher={teacher_model}, student={student_model}")
 
     _tasks_cache[task_id]["status"] = "running"
@@ -756,8 +750,6 @@ def _run_semi_supervised_sync(
     unsupervised_weight: float = 1.0,
 ) -> None:
     """Run semi-supervised training synchronously."""
-    from src.training.runner import YOLOTrainer
-
     logging.info(f"[{task_id}] Starting semi-supervised training: model={model}")
 
     _tasks_cache[task_id]["status"] = "running"

@@ -7,17 +7,14 @@ This module contains:
 """
 
 import asyncio
-import json
 import logging
 import time
-import uuid
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, Optional
 
 from ..store.task_store import (
     _tasks_cache,
-    _tasks_lock,
     _task_set,
     _cancel_events,
     _cancel_lock,
