@@ -60,7 +60,6 @@ from ..services._shared import (
     _run_training_sync,
     _run_export_sync,
     _run_benchmark_sync,
-    _run_curriculum_sync,
     _run_hpo_sync,
     _run_distill_sync,
     _run_semi_supervised_sync,
@@ -1874,8 +1873,7 @@ async def filter_dataset_quality(
         )
 
     try:
-        from src.data.quality_filter import DatasetQualityFilter, QualityReport
-        from src.data.evaluator import DatasetEvaluator
+        from src.data.quality_filter import DatasetQualityFilter
 
         output_dir = request.output_dir or None
         filter_obj = DatasetQualityFilter(output_dir=output_dir)
