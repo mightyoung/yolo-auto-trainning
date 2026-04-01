@@ -37,17 +37,46 @@ except ImportError:
 API_KEY_HEADER = APIKeyHeader(name="X-API-Key", auto_error=False)
 BEARER_TOKEN = HTTPBearer(auto_error=False)
 
-# JWT settings
-JWT_SECRET_KEY = os.getenv("JWT_SECRET_KEY")
-if not JWT_SECRET_KEY:
-    raise ValueError("JWT_SECRET_KEY environment variable must be set")
-JWT_ALGORITHM = "HS256"
-ACCESS_TOKEN_EXPIRE_MINUTES = 30  # 30 minutes
-REFRESH_TOKEN_EXPIRE_DAYS = 7  # 7 days
 
-# Redis settings
-REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379/0")
-REDIS_PASSWORD = os.getenv("REDIS_PASSWORD")
+# ==================== Runtime Settings ====================
+# Read at runtime, not import time, to avoid snapshot problems
+
+class RuntimeSettings:
+    """Runtime settings read on each access."""
+
+    @property
+    def JWT_SECRET_KEY(self) -> str | None:
+        return os.getenv("JWT_SECRET_KEY")
+
+    @property
+    def JWT_ALGORITHM(self) -> str:
+        return "HS256"
+
+    @property
+    def ACCESS_TOKEN_EXPIRE_MINUTES(self) -> int:
+        return 30
+
+    @property
+    def REFRESH_TOKEN_EXPIRE_DAYS(self) -> int:
+        return 7
+
+    @property
+    def REDIS_URL(self) -> str:
+        return os.getenv("REDIS_URL", "redis://localhost:6379/0")
+
+    @property
+    def REDIS_PASSWORD(self) -> str | None:
+        return os.getenv("REDIS_PASSWORD")
+
+    @property
+    def ALLOWED_ORIGINS(self) -> list:
+        return os.getenv(
+            "ALLOWED_ORIGINS",
+            "http://localhost:3000,http://localhost:8080"
+        ).split(",")
+
+
+_settings = RuntimeSettings()
 
 # Redis connection pool (singleton)
 _redis_pool: redis.ConnectionPool = None
@@ -62,8 +91,8 @@ def get_redis_client():
     try:
         if _redis_pool is None:
             _redis_pool = redis.ConnectionPool.from_url(
-                REDIS_URL,
-                password=REDIS_PASSWORD,
+                _settings.REDIS_URL,
+                password=_settings.REDIS_PASSWORD,
                 decode_responses=True,
                 max_connections=20
             )
@@ -79,10 +108,10 @@ def create_access_token(data: dict) -> str:
         raise ImportError("PyJWT not installed")
 
     to_encode = data.copy()
-    expire = datetime.now(timezone.utc) + timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
+    expire = datetime.now(timezone.utc) + timedelta(minutes=_settings.ACCESS_TOKEN_EXPIRE_MINUTES)
     to_encode.update({"exp": expire, "type": "access"})
 
-    return jwt.encode(to_encode, JWT_SECRET_KEY, algorithm=JWT_ALGORITHM)
+    return jwt.encode(to_encode, _settings.JWT_SECRET_KEY, algorithm=_settings.JWT_ALGORITHM)
 
 
 def create_refresh_token(data: dict) -> str:
@@ -91,10 +120,10 @@ def create_refresh_token(data: dict) -> str:
         raise ImportError("PyJWT not installed")
 
     to_encode = data.copy()
-    expire = datetime.now(timezone.utc) + timedelta(days=REFRESH_TOKEN_EXPIRE_DAYS)
+    expire = datetime.now(timezone.utc) + timedelta(days=_settings.REFRESH_TOKEN_EXPIRE_DAYS)
     to_encode.update({"exp": expire, "type": "refresh"})
 
-    return jwt.encode(to_encode, JWT_SECRET_KEY, algorithm=JWT_ALGORITHM)
+    return jwt.encode(to_encode, _settings.JWT_SECRET_KEY, algorithm=_settings.JWT_ALGORITHM)
 
 
 def verify_token(token: str) -> dict:
@@ -103,7 +132,7 @@ def verify_token(token: str) -> dict:
         raise ImportError("PyJWT not installed")
 
     try:
-        payload = jwt.decode(token, JWT_SECRET_KEY, algorithms=[JWT_ALGORITHM])
+        payload = jwt.decode(token, _settings.JWT_SECRET_KEY, algorithms=[_settings.JWT_ALGORITHM])
         return payload
     except jwt.ExpiredSignatureError:
         raise HTTPException(
@@ -173,14 +202,9 @@ def create_app() -> FastAPI:
 
     # CORS Configuration - Production Safe
     # ⚠️ v6: Never use allow_origins=["*"] with credentials
-    allowed_origins = os.getenv(
-        "ALLOWED_ORIGINS",
-        "http://localhost:3000,http://localhost:8080"
-    ).split(",")
-
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=allowed_origins,
+        allow_origins=_settings.ALLOWED_ORIGINS,
         allow_credentials=True,
         allow_methods=["GET", "POST", "PUT", "DELETE"],
         allow_headers=["Authorization", "Content-Type", "X-API-Key"],
