@@ -73,10 +73,16 @@ orchestration_spec = importlib.util.spec_from_file_location(
 orchestration_module = importlib.util.module_from_spec(orchestration_spec)
 sys.modules['agents.orchestration'] = orchestration_module
 
-# Now execute the module to populate it
-orchestration_spec.loader.exec_module(orchestration_module)
+# Also register and execute the tools submodule so patches apply to both
+tools_spec = importlib.util.spec_from_file_location(
+    "agents.tools",
+    biz_api_src / "agents" / "tools.py"
+)
+tools_module = importlib.util.module_from_spec(tools_spec)
+sys.modules['agents.tools'] = tools_module
+tools_spec.loader.exec_module(tools_module)
 
-# Now execute the module to populate it
+# Now execute the orchestration module
 orchestration_spec.loader.exec_module(orchestration_module)
 
 # Import TrainingAPIClient
@@ -114,17 +120,20 @@ class TestDatasetSearchTool:
         assert "Kaggle" in tool.description
 
     def test_tool_run_returns_no_results_message(self):
-        with patch.object(orchestration_module, 'DatasetDiscovery') as MockDiscovery:
+        with patch.object(orchestration_module, 'DatasetDiscovery') as MockDiscovery, \
+             patch.object(tools_module, 'DatasetDiscovery') as MockDiscovery2:
             mock_instance = Mock()
             mock_instance.search.return_value = []
             MockDiscovery.return_value = mock_instance
+            MockDiscovery2.return_value = mock_instance
             tool = orchestration_module.DatasetSearchTool()
             result = tool._run(query="fire detection", max_results=5)
             assert isinstance(result, str)
             assert "No datasets found" in result
 
     def test_tool_run_with_results(self):
-        with patch.object(orchestration_module, 'DatasetDiscovery') as MockDiscovery:
+        with patch.object(orchestration_module, 'DatasetDiscovery') as MockDiscovery, \
+             patch.object(tools_module, 'DatasetDiscovery') as MockDiscovery2:
             mock_instance = Mock()
             mock_ds = DatasetInfo(
                 source="roboflow",
@@ -138,6 +147,7 @@ class TestDatasetSearchTool:
             )
             mock_instance.search.return_value = [mock_ds]
             MockDiscovery.return_value = mock_instance
+            MockDiscovery2.return_value = mock_instance
             tool = orchestration_module.DatasetSearchTool()
             result = tool._run(query="fire", max_results=5)
             assert "fire-dataset" in result
@@ -158,10 +168,12 @@ class TestDatasetDownloadTool:
         assert "roboflow" in desc or "kaggle" in desc
 
     def test_tool_run_returns_success_message(self):
-        with patch.object(orchestration_module, 'DatasetDiscovery') as MockDiscovery:
+        with patch.object(orchestration_module, 'DatasetDiscovery') as MockDiscovery, \
+             patch.object(tools_module, 'DatasetDiscovery') as MockDiscovery2:
             mock_instance = Mock()
             mock_instance.download.return_value = "/data/fire-dataset"
             MockDiscovery.return_value = mock_instance
+            MockDiscovery2.return_value = mock_instance
             tool = orchestration_module.DatasetDownloadTool()
             result = tool._run(dataset_name="fire-dataset", source="roboflow")
             assert "Downloaded" in result
