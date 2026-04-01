@@ -9,26 +9,23 @@ This API runs on local/terminal and handles:
 """
 
 from contextlib import asynccontextmanager
-from typing import Optional, Union
+from typing import Optional
 import os
-import uuid
 import asyncio
-from datetime import datetime, timedelta, timezone
-import secrets
+from datetime import datetime, timezone
 
 from dotenv import load_dotenv
 load_dotenv()  # Load business-api/.env
 
-from fastapi import FastAPI, Request, HTTPException, status, Depends
+from fastapi import FastAPI, Request, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.security import APIKeyHeader, HTTPBearer, HTTPAuthorizationCredentials
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.responses import Response
 import redis
 
 # JWT imports
 try:
-    import jwt
+    import jwt  # noqa: F401 - used conditionally via JWT_AVAILABLE
     JWT_AVAILABLE = True
 except ImportError:
     JWT_AVAILABLE = False
@@ -204,15 +201,6 @@ app.add_middleware(SecurityHeadersMiddleware)
 # ==================== Authentication ====================
 # Authentication is now handled by the auth.py module
 
-from .auth import (
-    get_current_user,
-    get_optional_user,
-    require_role,
-    CurrentUser,
-    create_access_token,
-    verify_token,
-    verify_api_key,
-)
 
 
 # ==================== Routes ====================

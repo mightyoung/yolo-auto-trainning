@@ -319,7 +319,6 @@ class TrainingAPIClient:
         Returns:
             Edge device configuration for deployment
         """
-        import os
         r = self._get_redis()
         deploy_id = f"deploy_{uuid.uuid4().hex[:8]}"
 

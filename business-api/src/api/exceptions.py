@@ -23,7 +23,7 @@ Usage:
         raise HTTPException(status_code=400, detail=str(e))
 """
 
-from typing import Optional, Any
+from typing import Optional
 
 
 class BusinessError(Exception):

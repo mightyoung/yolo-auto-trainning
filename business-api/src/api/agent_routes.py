@@ -11,8 +11,8 @@ from typing import Optional, List
 from fastapi import APIRouter, HTTPException, BackgroundTasks, status, Depends, Request
 from pydantic import BaseModel, Field
 import uuid
-from datetime import datetime, timezone
-import os, sys
+from datetime import datetime
+import sys
 from pathlib import Path
 
 # Import authentication from auth module

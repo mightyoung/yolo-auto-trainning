@@ -7,7 +7,7 @@ This module provides client for calling Auto Label service on GPU server.
 
 import os
 import requests
-from typing import List, Optional, Dict, Any
+from typing import List, Dict, Any
 
 
 class AutoLabelClient:

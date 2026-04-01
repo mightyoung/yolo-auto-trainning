@@ -5,7 +5,7 @@ import json
 import os
 import uuid
 from datetime import datetime
-from typing import Optional, List
+from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks, Request
 from pydantic import BaseModel, Field
@@ -16,7 +16,6 @@ from ..task_registry import (
     normalize_task_record,
     build_task_record,
     store_task_in_redis,
-    get_task_from_redis,
     get_user_tasks_from_redis,
     verify_task_ownership,
     delete_task_from_redis,
@@ -31,13 +30,10 @@ from ..task_models import (
     TrainStatusResponse,
 )
 from ..exceptions import (
-    BusinessError,
     ExternalDependencyError,
     StateConflictError,
-    ConfigurationError,
     task_not_found,
     task_not_owned,
-    training_api_unavailable,
 )
 
 # Import model registry routes to include in this router
