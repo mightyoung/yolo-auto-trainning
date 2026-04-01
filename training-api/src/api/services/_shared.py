@@ -32,6 +32,7 @@ if str(_training_api_src_root) not in sys.path:
 from ..store.task_store import (
     _tasks_cache,
     _tasks_lock,
+    _task_get,
     _task_set,
     _cancel_events,
     _cancel_lock,
