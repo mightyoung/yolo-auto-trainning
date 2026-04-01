@@ -5,7 +5,6 @@ Location: training-api/src/api/model_manager.py
 Manages model versions, storage, and retrieval.
 """
 
-import os
 import json
 import shutil
 from pathlib import Path

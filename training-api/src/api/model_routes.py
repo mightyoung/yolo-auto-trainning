@@ -7,11 +7,8 @@ Contains:
 - Model storage and retrieval
 """
 
-import sys
-from pathlib import Path
-from typing import Optional, List
 from fastapi import APIRouter, HTTPException, Header, status, Request, Depends
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
 
 # Import verify_internal_api_key from gateway for timing-safe comparison
 # Use relative import since gateway is in the same package

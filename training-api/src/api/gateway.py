@@ -15,18 +15,11 @@ import os
 import secrets
 import time
 
-from fastapi import FastAPI, HTTPException, status, Depends, Request
+from fastapi import FastAPI, HTTPException, status, Request
 from fastapi.middleware.cors import CORSMiddleware
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.responses import Response
 import redis
-
-# JWT imports
-try:
-    import jwt
-    JWT_AVAILABLE = True
-except ImportError:
-    JWT_AVAILABLE = False
 
 
 # ==================== Runtime Settings ====================
@@ -86,7 +79,11 @@ def get_redis_client():
     if os.getenv("DISABLE_REDIS", "").lower() in ("1", "true", "yes"):
         return None
     try:
-        return redis.from_url(settings.REDIS_URL, password=settings.REDIS_PASSWORD, decode_responses=True)
+        return redis.from_url(
+            settings.REDIS_URL,
+            password=settings.REDIS_PASSWORD,
+            decode_responses=True,
+        )
     except Exception:
         return None
 

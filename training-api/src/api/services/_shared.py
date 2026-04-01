@@ -16,17 +16,12 @@ These are kept in a shared module because:
 import asyncio
 import json
 import logging
-import subprocess
 import sys
-import threading
 import time
-import uuid
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from fastapi import APIRouter, BackgroundTasks, Depends, Header, HTTPException, Request, status
-from pydantic import BaseModel, Field
 
 # Add training-api/src to sys.path so 'src' package resolves here (not legacy src/)
 # This prevents legacy /home/wangxin/yolo-auto-training/src/ from shadowing training-api/src/
