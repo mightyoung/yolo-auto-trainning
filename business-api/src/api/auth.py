@@ -31,19 +31,43 @@ except ImportError:
 API_KEY_HEADER = APIKeyHeader(name="X-API-Key", auto_error=False)
 BEARER_TOKEN = HTTPBearer(auto_error=False)
 
-# JWT settings
-JWT_SECRET_KEY = os.getenv("JWT_SECRET_KEY")
-JWT_ALGORITHM = "HS256"
-ACCESS_TOKEN_EXPIRE_MINUTES = 30
 
-# API Key settings for service-to-service authentication
-# No default - must be configured via environment
-BUSINESS_API_KEY = os.getenv("BUSINESS_API_KEY")
+# ==================== Runtime Settings ====================
+# These are read at runtime, not at import time, to avoid snapshot problems
 
-# Redis settings
-REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379/0")
-REDIS_PASSWORD = os.getenv("REDIS_PASSWORD")
+class RuntimeSettings:
+    """Runtime settings that read from environment on each access."""
 
+    @property
+    def JWT_SECRET_KEY(self) -> str | None:
+        return os.getenv("JWT_SECRET_KEY")
+
+    @property
+    def JWT_ALGORITHM(self) -> str:
+        return "HS256"
+
+    @property
+    def ACCESS_TOKEN_EXPIRE_MINUTES(self) -> int:
+        return 30
+
+    @property
+    def BUSINESS_API_KEY(self) -> str | None:
+        return os.getenv("BUSINESS_API_KEY")
+
+    @property
+    def REDIS_URL(self) -> str:
+        return os.getenv("REDIS_URL", "redis://localhost:6379/0")
+
+    @property
+    def REDIS_PASSWORD(self) -> str | None:
+        return os.getenv("REDIS_PASSWORD")
+
+
+# Global settings instance
+_settings = RuntimeSettings()
+
+
+# ==================== Redis Pool ====================
 # Redis connection pool (singleton)
 _redis_pool = None
 
@@ -54,8 +78,8 @@ def get_redis_client():
     try:
         if _redis_pool is None:
             _redis_pool = redis.ConnectionPool.from_url(
-                REDIS_URL,
-                password=REDIS_PASSWORD,
+                _settings.REDIS_URL,
+                password=_settings.REDIS_PASSWORD,
                 decode_responses=True,
                 max_connections=20
             )
@@ -89,15 +113,15 @@ class CurrentUser:
 def create_access_token(data: dict) -> str:
     """Create JWT access token."""
     to_encode = data.copy()
-    expire = datetime.now(timezone.utc) + timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
+    expire = datetime.now(timezone.utc) + timedelta(minutes=_settings.ACCESS_TOKEN_EXPIRE_MINUTES)
     to_encode.update({"exp": expire, "type": "access"})
-    return jwt.encode(to_encode, JWT_SECRET_KEY, algorithm=JWT_ALGORITHM)
+    return jwt.encode(to_encode, _settings.JWT_SECRET_KEY, algorithm=_settings.JWT_ALGORITHM)
 
 
 def verify_token(token: str) -> dict:
     """Verify JWT token."""
     try:
-        payload = jwt.decode(token, JWT_SECRET_KEY, algorithms=[JWT_ALGORITHM])
+        payload = jwt.decode(token, _settings.JWT_SECRET_KEY, algorithms=[_settings.JWT_ALGORITHM])
         return payload
     except jwt.ExpiredSignatureError:
         raise HTTPException(
@@ -113,7 +137,7 @@ def verify_token(token: str) -> dict:
 
 def verify_api_key(provided_key: str) -> bool:
     """Verify API key using timing-safe comparison to prevent timing attacks."""
-    return secrets.compare_digest(provided_key, BUSINESS_API_KEY)
+    return secrets.compare_digest(provided_key, _settings.BUSINESS_API_KEY)
 
 
 async def get_current_user(
