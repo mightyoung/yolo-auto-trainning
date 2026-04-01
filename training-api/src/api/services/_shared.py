@@ -2,7 +2,6 @@
 
 This module is imported by all route sub-modules and provides:
 - Task store imports (_tasks_cache, _task_set, etc.)
-- Gateway utility imports (verify_internal_api_key, check_rate_limit)
 - Module-level retry circuit breaker state
 - DynamicTrainingManager class
 - All _run_*_sync functions (background task runners)
@@ -29,19 +28,11 @@ _training_api_src_root = Path(__file__).parent.parent  # = training-api/src/
 if str(_training_api_src_root) not in sys.path:
     sys.path.insert(0, str(_training_api_src_root))
 
-# Import verify_internal_api_key from gateway for timing-safe comparison
-# NOTE: This import is safe even during gateway.py circular import because
-# we only read function references, and Python returns the partially-initialized
-# module without blocking.
-from ..gateway import verify_internal_api_key, check_rate_limit, get_redis_client
-
 # Import task store
 from ..store.task_store import (
     _tasks_cache,
     _tasks_lock,
-    _task_get,
     _task_set,
-    _task_del,
     _cancel_events,
     _cancel_lock,
 )
