@@ -289,8 +289,8 @@ class AutoAdjustAgent:
             # SSH bridge: check GPU server filesystem via paramiko
             try:
                 import paramiko
-                ssh_host = os.getenv("GPU_SERVER_HOST", "192.168.11.3")
-                ssh_user = os.getenv("GPU_SERVER_USER", "wangxin")
+                ssh_host = os.getenv("GPU_SERVER_HOST")
+                ssh_user = os.getenv("GPU_SERVER_USER")
                 ssh_pass = os.getenv("GPU_SERVER_PASS")
                 ssh = paramiko.SSHClient()
                 ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
@@ -363,8 +363,8 @@ class AutoAdjustAgent:
             if sample_paths:
                 try:
                     import paramiko
-                    ssh_host = os.getenv("GPU_SERVER_HOST", "192.168.11.3")
-                    ssh_user = os.getenv("GPU_SERVER_USER", "wangxin")
+                    ssh_host = os.getenv("GPU_SERVER_HOST")
+                    ssh_user = os.getenv("GPU_SERVER_USER")
                     ssh_pass = os.getenv("GPU_SERVER_PASS")
                     ssh = paramiko.SSHClient()
                     ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
@@ -413,8 +413,8 @@ class AutoAdjustAgent:
             if pseudo_labels:
                 try:
                     import paramiko
-                    ssh_host = os.getenv("GPU_SERVER_HOST", "192.168.11.3")
-                    ssh_user = os.getenv("GPU_SERVER_USER", "wangxin")
+                    ssh_host = os.getenv("GPU_SERVER_HOST")
+                    ssh_user = os.getenv("GPU_SERVER_USER")
                     ssh_pass = os.getenv("GPU_SERVER_PASS")
                     ssh = paramiko.SSHClient()
                     ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
