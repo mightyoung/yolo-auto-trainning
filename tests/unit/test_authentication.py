@@ -22,11 +22,50 @@ os.environ.setdefault("TRAINING_API_URL", "http://localhost:8001")
 os.environ.setdefault("TRAINING_API_KEY", "test-api-key")
 os.environ.setdefault("REDIS_URL", "redis://localhost:6379/0")
 
-# Mock dependencies
-sys.modules['redis'] = MagicMock()
-sys.modules['celery'] = MagicMock()
-
 from fastapi import HTTPException
+
+
+# ==================== Fixtures ====================
+
+_original_sys_modules = {}
+
+
+@pytest.fixture(autouse=True)
+def _setup_module_mocks():
+    """Set up redis/celery mocks at test execution time, then clean up after.
+
+    This replaces the old module-level sys.modules[] assignments that caused
+    cross-test pollution (redis/celery mocks persisted into subsequent test files,
+    causing 401 auth errors when gateway was imported with the stale mock).
+    """
+    global _original_sys_modules
+
+    # Save originals (may be None or a real module object)
+    _original_sys_modules['redis'] = sys.modules.get('redis')
+    _original_sys_modules['celery'] = sys.modules.get('celery')
+
+    # Install mocks - these allow gateway.py to import even though
+    # redis/celery packages are not installed in the test environment.
+    # The legacy src/api/gateway.py imports routes.py which imports celery.
+    sys.modules['redis'] = MagicMock()
+    sys.modules['celery'] = MagicMock()
+
+    yield
+
+    # Restore originals - if they were real modules, restore them;
+    # if they were None (not present), remove the mock entry
+    # This ensures subsequent test files can import the real modules
+    # without inheriting our mocks.
+    for mod_name in ('redis', 'celery'):
+        orig = _original_sys_modules.get(mod_name)
+        if orig is None:
+            # Module was not present before - remove the mock
+            sys.modules.pop(mod_name, None)
+        else:
+            # Restore original (real module or previous mock)
+            sys.modules[mod_name] = orig
+
+    _original_sys_modules.clear()
 
 
 # ==================== Test JWT Functions ====================

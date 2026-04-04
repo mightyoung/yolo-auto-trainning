@@ -5,9 +5,6 @@ from pathlib import Path
 import sys
 from unittest.mock import Mock, patch, MagicMock
 
-# Mock ultralytics before importing the module
-sys.modules['ultralytics'] = MagicMock()
-
 # Add src to path - handle both direct and package execution
 test_dir = Path(__file__).parent
 project_root = test_dir.parent.parent
@@ -209,18 +206,34 @@ class TestExportValidation:
         """Test validation of valid model path."""
         model_path = temp_dir / "model.pt"
         model_path.touch()
+        exported_path = temp_dir / "model.onnx"
+        exported_path.touch()  # Create the exported model file so validation passes
 
-        # Should not raise - the export method handles this
-        exporter.export(model_path=model_path, platform="onnx", imgsz=640)
+        mock_yolo_instance = MagicMock()
+        mock_yolo_instance.export.return_value = str(exported_path)
+
+        with patch.object(Path, 'stat') as mock_stat:
+            mock_stat.return_value = MagicMock(st_size=1024 * 1024)
+
+            with patch('deployment.exporter.YOLO') as mock_yolo:
+                mock_yolo.return_value = mock_yolo_instance
+                # Should not raise - the export method handles this
+                result = exporter.export(model_path=model_path, platform="onnx", imgsz=640)
+                assert result.status == "success"
 
     def test_validate_model_path_invalid(self, exporter, temp_dir):
         """Test validation of invalid model path."""
         model_path = temp_dir / "nonexistent.pt"
 
-        # Should handle gracefully (the YOLO constructor will fail)
-        result = exporter.export(model_path=model_path, platform="onnx", imgsz=640)
-        assert result.status == "failed"
-        assert result.error is not None
+        mock_yolo_instance = MagicMock()
+        mock_yolo_instance.export.side_effect = RuntimeError("Model loading failed")
+
+        with patch('deployment.exporter.YOLO') as mock_yolo:
+            mock_yolo.return_value = mock_yolo_instance
+            # Should handle gracefully (the YOLO constructor will fail)
+            result = exporter.export(model_path=model_path, platform="onnx", imgsz=640)
+            assert result.status == "failed"
+            assert result.error is not None
 
     def test_validate_platform_supported(self, exporter, mock_model_file, temp_dir):
         """Test validation of supported platform."""

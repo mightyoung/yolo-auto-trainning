@@ -79,6 +79,9 @@ def _mock_current_user():
 
 
 def test_submit_training_persists_device_and_batch():
+    # Ensure fresh module state for this test - conftest clears modules between tests
+    _install_business_src_package()
+
     mock_redis = Mock()
     mock_training_client = Mock()
     mock_training_client.start_training = AsyncMock(return_value={"task_id": "train_123", "status": "started"})
@@ -117,6 +120,8 @@ def test_submit_training_persists_device_and_batch():
 
 
 def test_adjust_training_updates_original_task_and_reuses_original_params():
+    _install_business_src_package()
+
     mock_redis = Mock()
     mock_training_client = Mock()
     mock_training_client.cancel_task = AsyncMock(return_value={"task_id": "train_old", "status": "cancelled"})
@@ -165,6 +170,8 @@ def test_adjust_training_updates_original_task_and_reuses_original_params():
 
 
 def test_business_status_exposes_resubmit_metadata():
+    _install_business_src_package()
+
     mock_redis = Mock()
     owned_task = {
         "task_id": "train_123",
@@ -202,6 +209,8 @@ def test_business_status_exposes_resubmit_metadata():
 
 
 def test_list_tasks_returns_registry_and_execution_views():
+    _install_business_src_package()
+
     mock_redis = Mock()
     mock_redis.smembers.return_value = {"train_123"}
     mock_redis.get.return_value = json.dumps({
@@ -245,6 +254,8 @@ def test_list_tasks_returns_registry_and_execution_views():
 
 
 def test_export_status_uses_aggregated_execution_snapshot():
+    _install_business_src_package()
+
     mock_redis = Mock()
     mock_redis.get.return_value = json.dumps({
         "task_id": "export_123",
@@ -279,6 +290,8 @@ def test_export_status_uses_aggregated_execution_snapshot():
 
 
 def test_list_tasks_falls_back_to_registry_summary_when_execution_unavailable():
+    _install_business_src_package()
+
     mock_redis = Mock()
     mock_redis.smembers.return_value = {"train_123"}
     mock_redis.get.return_value = json.dumps({
@@ -312,6 +325,8 @@ def test_list_tasks_falls_back_to_registry_summary_when_execution_unavailable():
 
 
 def test_analysis_task_uses_normalized_submission_schema():
+    _install_business_src_package()
+
     mock_redis = Mock()
     mock_training_client = Mock()
 
@@ -350,6 +365,8 @@ def test_analysis_task_uses_normalized_submission_schema():
 
 
 def test_report_task_is_persisted_with_normalized_schema():
+    _install_business_src_package()
+
     mock_redis = Mock()
     mock_training_client = Mock()
 
@@ -388,6 +405,8 @@ def test_report_task_is_persisted_with_normalized_schema():
 
 
 def test_list_tasks_includes_result_summary_for_analysis_tasks():
+    _install_business_src_package()
+
     mock_redis = Mock()
     mock_redis.smembers.return_value = {"analyze_123"}
     mock_redis.get.return_value = json.dumps({
@@ -421,6 +440,8 @@ def test_list_tasks_includes_result_summary_for_analysis_tasks():
 
 
 def test_task_detail_returns_aggregated_training_task():
+    _install_business_src_package()
+
     mock_redis = Mock()
     mock_redis.get.return_value = json.dumps({
         "task_id": "train_123",
@@ -457,6 +478,8 @@ def test_task_detail_returns_aggregated_training_task():
 
 
 def test_task_detail_returns_analysis_result_summary():
+    _install_business_src_package()
+
     mock_redis = Mock()
     mock_redis.get.return_value = json.dumps({
         "task_id": "analyze_123",
@@ -489,6 +512,8 @@ def test_task_detail_returns_analysis_result_summary():
 
 
 def test_training_status_matches_task_detail_execution_snapshot():
+    _install_business_src_package()
+
     mock_redis = Mock()
     mock_redis.get.return_value = json.dumps({
         "task_id": "train_123",
@@ -553,6 +578,8 @@ def test_training_status_matches_task_detail_execution_snapshot():
 
 
 def test_training_status_falls_back_to_registry_state_when_execution_unavailable():
+    _install_business_src_package()
+
     mock_redis = Mock()
     mock_redis.get.return_value = json.dumps({
         "task_id": "train_123",
@@ -622,6 +649,8 @@ def test_business_gateway_imports_without_training_env_vars():
 
 
 def test_export_status_matches_task_detail_execution_snapshot():
+    _install_business_src_package()
+
     mock_redis = Mock()
     mock_redis.get.return_value = json.dumps({
         "task_id": "export_123",
@@ -680,6 +709,8 @@ def test_export_status_matches_task_detail_execution_snapshot():
 
 
 def test_export_status_falls_back_to_registry_submission_when_execution_unavailable():
+    _install_business_src_package()
+
     mock_redis = Mock()
     mock_redis.get.return_value = json.dumps({
         "task_id": "export_123",

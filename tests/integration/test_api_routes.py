@@ -28,11 +28,44 @@ os.environ.setdefault("TRAINING_API_URL", "http://localhost:8001")
 os.environ.setdefault("TRAINING_API_KEY", "test-api-key")
 os.environ.setdefault("REDIS_URL", "redis://localhost:6379/0")
 
-# Mock dependencies that may not be installed
-sys.modules['redis'] = MagicMock()
-sys.modules['celery'] = MagicMock()
+# Note: redis and celery are NOT mocked at module level because:
+# 1. redis IS installed in the test environment (real redis package)
+# 2. celery is NOT installed, but the integration tests use patch() on
+#    src.api.gateway.get_redis_client rather than importing gateway directly
+# 3. Module-level mocks persisted in sys.modules and polluted subsequent tests
 
 pytestmark = pytest.mark.integration
+
+
+# ==================== Fixtures ====================
+
+_original_integration_modules = {}
+
+
+@pytest.fixture(autouse=True)
+def _setup_integration_mocks():
+    """Set up redis/celery mocks at test execution time, clean up after.
+
+    This fixture mocks redis and celery for tests that need them.
+    """
+    global _original_integration_modules
+
+    _original_integration_modules['redis'] = sys.modules.get('redis')
+    _original_integration_modules['celery'] = sys.modules.get('celery')
+
+    sys.modules['redis'] = MagicMock()
+    sys.modules['celery'] = MagicMock()
+
+    yield
+
+    for mod_name in ('redis', 'celery'):
+        orig = _original_integration_modules.get(mod_name)
+        if orig is None:
+            sys.modules.pop(mod_name, None)
+        else:
+            sys.modules[mod_name] = orig
+
+    _original_integration_modules.clear()
 
 
 # ==================== Test Health Endpoint ====================

@@ -6,21 +6,7 @@ from unittest.mock import Mock, MagicMock, patch
 import sys
 import tempfile
 
-# Setup mock for ultralytics BEFORE importing
-mock_ultralytics = Mock()
-mock_yolo_class = Mock()
-mock_ultralytics.YOLO = mock_yolo_class
-sys.modules['ultralytics'] = mock_ultralytics
-
-
 # ==================== Fixtures ====================
-
-@pytest.fixture(autouse=True)
-def reset_mock():
-    """Reset mock before each test."""
-    mock_yolo_class.reset_mock()
-    yield
-
 
 # Cache for lazily-loaded training API imports
 _training_api_imports = {}

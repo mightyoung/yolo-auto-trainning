@@ -48,7 +48,7 @@ def peek_queue() -> list:
 def get_free_gpu_slots() -> list:
     """Query Training API for free GPU slots."""
     training_url = os.environ.get('TRAINING_API_URL', 'http://localhost:8001')
-    api_key = os.environ.get('TRAINING_API_KEY', 'default-key')
+    api_key = os.environ.get('TRAINING_API_KEY')
     try:
         r = httpx.get(
             f'{training_url}/api/v1/internal/gpu/status',
@@ -67,7 +67,7 @@ def get_free_gpu_slots() -> list:
 def dispatch_task(task_metadata: dict) -> Optional[str]:
     """Submit task to Training API. Returns task_id."""
     training_url = os.environ.get('TRAINING_API_URL', 'http://localhost:8001')
-    api_key = os.environ.get('TRAINING_API_KEY', 'default-key')
+    api_key = os.environ.get('TRAINING_API_KEY')
     try:
         r = httpx.post(
             f'{training_url}/api/v1/internal/train/curriculum',

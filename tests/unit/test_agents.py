@@ -95,6 +95,45 @@ sys.modules['api.training_client'] = training_client_module
 training_client_spec.loader.exec_module(training_client_module)
 
 
+# ==================== Fixtures ====================
+
+_agents_sys_modules = {}
+
+
+@pytest.fixture(autouse=True)
+def _setup_agents_mocks():
+    """Set up agent test mocks at execution time, clean up after.
+
+    Replaces module-level sys.modules[] assignments that caused cross-test pollution.
+    """
+    global _agents_sys_modules
+
+    # Save originals
+    _agents_sys_modules['redis'] = sys.modules.get('redis')
+    _agents_sys_modules['src'] = sys.modules.get('src')
+    _agents_sys_modules['src.data'] = sys.modules.get('src.data')
+    _agents_sys_modules['src.data.discovery'] = sys.modules.get('src.data.discovery')
+
+    # Install mocks
+    sys.modules['redis'] = MagicMock()
+    sys.modules['src'] = MagicMock()
+    sys.modules['src.data'] = MagicMock()
+    sys.modules['src.data.discovery'] = MagicMock()
+    sys.modules['src.data.discovery'].DatasetInfo = DatasetInfo
+
+    yield
+
+    # Restore originals
+    for mod_name in ('redis', 'src', 'src.data', 'src.data.discovery'):
+        orig = _agents_sys_modules.get(mod_name)
+        if orig is None:
+            sys.modules.pop(mod_name, None)
+        else:
+            sys.modules[mod_name] = orig
+
+    _agents_sys_modules.clear()
+
+
 # ==================== Mock fixtures ====================
 
 @pytest.fixture
