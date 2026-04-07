@@ -29,6 +29,9 @@ if str(_training_api_src_root) not in sys.path:
 
 # Import task store
 from ..store.task_store import (
+    append_task_attempt,
+    append_task_event,
+    build_attempt_record,
     _cancel_events,
     _cancel_lock,
     _task_get,  # noqa: F401 - re-exported for routes
@@ -39,6 +42,33 @@ from ..store.task_store import (
 
 # Module-level retry circuit breaker: task_id -> retry count
 _retry_counts: dict[str, int] = {}
+
+
+def _record_training_attempt(
+    task_id: str,
+    *,
+    attempt_type: str,
+    stage: str,
+    outcome: str,
+    source: str,
+    action: str,
+    error: str | None = None,
+    details: dict[str, Any] | None = None,
+) -> None:
+    """Persist a bounded attempt record into the training task store."""
+    append_task_attempt(
+        task_id,
+        build_attempt_record(
+            attempt_type=attempt_type,
+            stage=stage,
+            outcome=outcome,
+            source=source,
+            action=action,
+            error=error,
+            training_task_id=task_id,
+            details=details,
+        ),
+    )
 
 
 # ==================== Dynamic Training Manager ====================
@@ -120,6 +150,15 @@ def _run_training_sync(
             _tasks_cache[task_id]["status"] = "running"
             _tasks_cache[task_id]["started_at"] = datetime.now().isoformat()
             _task_set(task_id, _tasks_cache[task_id])
+            append_task_event(
+                task_id,
+                source=task_id,
+                target=f"{task_id}:running",
+                relation="training_started",
+                node_type="training",
+                label="running",
+                metadata={"model": model, "epochs": epochs, "device": device},
+            )
 
             # --- DVC dataset versioning (graceful degradation) ---
             data_yaml_path = Path(data_yaml).resolve().parent
@@ -234,6 +273,29 @@ def _run_training_sync(
                 _tasks_cache[task_id]["metrics"] = result.metrics or {}
                 _tasks_cache[task_id]["model_path"] = str(result.model_path) if result.model_path else None
                 _tasks_cache[task_id]["early_stopped"] = result.early_stopped
+                append_task_event(
+                    task_id,
+                    source=f"{task_id}:running",
+                    target=f"{task_id}:completed",
+                    relation="training_completed",
+                    node_type="training",
+                    label="completed",
+                    metadata={"model_path": str(result.model_path) if result.model_path else None},
+                )
+                _record_training_attempt(
+                    task_id,
+                    attempt_type="training",
+                    stage="train",
+                    outcome="completed",
+                    source="training_runner",
+                    action="complete",
+                    details={
+                        "metrics": result.metrics or {},
+                        "model_path": str(result.model_path) if result.model_path else None,
+                        "early_stopped": result.early_stopped,
+                        "attempt": attempt + 1,
+                    },
+                )
 
                 # Record dataset_version in task record
                 if version_file.exists():
@@ -289,10 +351,48 @@ def _run_training_sync(
             elif result.status == "cancelled":
                 _tasks_cache[task_id]["status"] = "cancelled"
                 _tasks_cache[task_id]["error"] = "Training cancelled by user"
+                append_task_event(
+                    task_id,
+                    source=f"{task_id}:running",
+                    target=f"{task_id}:cancelled",
+                    relation="training_cancelled",
+                    node_type="training",
+                    label="cancelled",
+                    metadata={"reason": "user_cancelled"},
+                )
+                _record_training_attempt(
+                    task_id,
+                    attempt_type="training",
+                    stage="train",
+                    outcome="cancelled",
+                    source="training_runner",
+                    action="cancel",
+                    error="Training cancelled by user",
+                    details={"attempt": attempt + 1},
+                )
                 logging.info(f"[{task_id}] Training cancelled")
             else:
                 _tasks_cache[task_id]["status"] = "failed"
                 _tasks_cache[task_id]["error"] = result.error or "Unknown error"
+                append_task_event(
+                    task_id,
+                    source=f"{task_id}:running",
+                    target=f"{task_id}:failed",
+                    relation="training_failed",
+                    node_type="training",
+                    label="failed",
+                    metadata={"error": result.error or "Unknown error"},
+                )
+                _record_training_attempt(
+                    task_id,
+                    attempt_type="training",
+                    stage="train",
+                    outcome="failed",
+                    source="training_runner",
+                    action="finish",
+                    error=result.error or "Unknown error",
+                    details={"attempt": attempt + 1},
+                )
                 logging.error(f"[{task_id}] Training failed: {result.error}")
 
         except TrainingCancelled:
@@ -312,9 +412,32 @@ def _run_training_sync(
                     f"[{task_id}] Training failed (attempt {attempt + 1}/{max_retries + 1}), "
                     f"retrying in {retry_delay}s: {e}"
                 )
+                _record_training_attempt(
+                    task_id,
+                    attempt_type="training_retry",
+                    stage="train",
+                    outcome="retrying",
+                    source="training_runner",
+                    action="retry_after_failure",
+                    error=str(e),
+                    details={
+                        "attempt": attempt + 1,
+                        "max_attempts": max_retries + 1,
+                        "retry_delay_seconds": retry_delay,
+                    },
+                )
                 _tasks_cache[task_id]["status"] = "retrying"
                 _tasks_cache[task_id]["error"] = str(e)
                 _task_set(task_id, _tasks_cache[task_id])
+                append_task_event(
+                    task_id,
+                    source=f"{task_id}:running",
+                    target=f"{task_id}:retrying_{attempt + 1}",
+                    relation="training_retry",
+                    node_type="training",
+                    label="retrying",
+                    metadata={"attempt": attempt + 1, "error": str(e)},
+                )
                 # Signal the trainer to stop before sleeping
                 with _cancel_lock:
                     if task_id in _cancel_events:
@@ -327,6 +450,28 @@ def _run_training_sync(
                 logging.error(f"[{task_id}] Training failed after {max_retries + 1} attempts: {e}", exc_info=True)
                 _tasks_cache[task_id]["status"] = "failed"
                 _tasks_cache[task_id]["error"] = f"Failed after {max_retries + 1} attempts: {last_error}"
+                _record_training_attempt(
+                    task_id,
+                    attempt_type="training",
+                    stage="train",
+                    outcome="failed",
+                    source="training_runner",
+                    action="exhaust_retries",
+                    error=f"Failed after {max_retries + 1} attempts: {last_error}",
+                    details={
+                        "attempts": max_retries + 1,
+                        "last_error": str(last_error) if last_error else None,
+                    },
+                )
+                append_task_event(
+                    task_id,
+                    source=f"{task_id}:retrying_{max_retries + 1}",
+                    target=f"{task_id}:failed",
+                    relation="training_failed",
+                    node_type="training",
+                    label="failed",
+                    metadata={"attempts": max_retries + 1, "last_error": str(last_error) if last_error else None},
+                )
         finally:
             _tasks_cache[task_id]["completed_at"] = datetime.now().isoformat()
             # Write to Redis BEFORE returning so polling always sees final state
@@ -366,6 +511,15 @@ def _run_export_sync(
         _tasks_cache[task_id]["status"] = "running"
         _tasks_cache[task_id]["started_at"] = datetime.now().isoformat()
         _task_set(task_id, _tasks_cache[task_id])
+        append_task_event(
+            task_id,
+            source=task_id,
+            target=f"{task_id}:running",
+            relation="export_started",
+            node_type="export",
+            label="running",
+            metadata={"platform": platform, "formats": formats},
+        )
 
         if single_format:
             # Single-format: use existing ModelExporter
@@ -383,6 +537,15 @@ def _run_export_sync(
                 _tasks_cache[task_id]["size_mb"] = result.size_mb
                 _tasks_cache[task_id]["format"] = result.format
                 _tasks_cache[task_id]["formats"] = formats
+                append_task_event(
+                    task_id,
+                    source=f"{task_id}:running",
+                    target=f"{task_id}:completed",
+                    relation="export_completed",
+                    node_type="export",
+                    label="completed",
+                    metadata={"export_path": str(result.model_path), "format": result.format},
+                )
                 logging.info(f"[{task_id}] Export completed: {result.model_path} ({result.size_mb:.1f}MB)")
 
                 # Auto-benchmark after single-format export
@@ -391,6 +554,15 @@ def _run_export_sync(
             else:
                 _tasks_cache[task_id]["status"] = "failed"
                 _tasks_cache[task_id]["error"] = result.error or "Unknown export error"
+                append_task_event(
+                    task_id,
+                    source=f"{task_id}:running",
+                    target=f"{task_id}:failed",
+                    relation="export_failed",
+                    node_type="export",
+                    label="failed",
+                    metadata={"error": result.error or "Unknown export error"},
+                )
                 logging.error(f"[{task_id}] Export failed: {result.error}")
         else:
             # Multi-format: use YOLOTrainer.export_multi
@@ -438,6 +610,15 @@ def _run_export_sync(
         logging.error(f"[{task_id}] Export exception: {e}", exc_info=True)
         _tasks_cache[task_id]["status"] = "failed"
         _tasks_cache[task_id]["error"] = str(e)
+        append_task_event(
+            task_id,
+            source=f"{task_id}:running",
+            target=f"{task_id}:failed",
+            relation="export_failed",
+            node_type="export",
+            label="failed",
+            metadata={"error": str(e)},
+        )
     finally:
         _tasks_cache[task_id]["completed_at"] = datetime.now().isoformat()
         _task_set(task_id, _tasks_cache[task_id])

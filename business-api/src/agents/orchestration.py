@@ -51,6 +51,15 @@ from .ssh_ops import (
     generate_data_yaml_ssh,
 )
 from .auto_adjust_agent import AutoAdjustAgent
+from .worker_memory import (
+    append_agent_attempt,
+    build_attempt_record,
+    sanitize_training_status,
+)
+try:
+    from ..api.task_registry import append_task_event
+except ImportError:  # pragma: no cover - compatibility with direct package imports
+    from api.task_registry import append_task_event
 
 # Lazy import for optional crewai dependency
 CREWAI_AVAILABLE = False
@@ -315,6 +324,16 @@ class YOLOTrainingOrchestrator:
             "training_model": model,
             "training_epochs": str(epochs),
             "training_imgsz": str(imgsz),
+            "submission": json.dumps({
+                "model": model,
+                "epochs": epochs,
+                "imgsz": imgsz,
+                "batch": batch,
+                "device": device,
+                "augmentation_preset": augmentation_preset,
+                "resume_from": resume_from,
+                "data_yaml": data.get("dataset_path", "/home/wangxin/data/fire-smoke") + "/data.yaml",
+            }),
         })
 
         try:
@@ -388,6 +407,16 @@ class YOLOTrainingOrchestrator:
                 "progress": "10.0",  # Stage 1 just started
                 "training_task_id": training_task_id,
             })
+            event_state = append_task_event(
+                r.hgetall(f"agent:{task_id}"),
+                source=task_id,
+                target=training_task_id,
+                relation="training_started",
+                node_type="task",
+                label="training task",
+                metadata={"training_type": "curriculum"},
+            )
+            r.hset(f"agent:{task_id}", mapping={"event_graph": json.dumps(event_state.get("event_graph", {}))})
 
             # Poll Training API for completion (runs in background thread)
             self._poll_training(task_id, training_task_id, client)
@@ -422,6 +451,7 @@ class YOLOTrainingOrchestrator:
                 try:
                     # Use sync client to avoid asyncio.run() in thread
                     status_data = client.get_task_status_sync(training_task_id)
+                    status_summary = sanitize_training_status(status_data)
                     status = status_data.get("status", "unknown")
                     progress = status_data.get("progress", 60)
 
@@ -444,7 +474,7 @@ class YOLOTrainingOrchestrator:
                         "status": "training",
                         "progress": str(progress),
                         "training_status": status,
-                        "poll_raw": str(status_data),
+                        "training_summary": json.dumps(status_summary),
                         "live_mAP50": str(live_mAP50) if live_mAP50 is not None else "",
                         "lr_decay_triggered": str(lr_decay_triggered),
                         "augment_boost_active": str(augment_boost_active),
@@ -494,6 +524,29 @@ class YOLOTrainingOrchestrator:
                     if status in ("completed", "success"):
                         auto_adjust_agent.stop()
                         model_path = status_data.get("model_path", "/home/wangxin/runs/train/weights/best.pt")
+                        append_agent_attempt(
+                            r,
+                            task_id,
+                            build_attempt_record(
+                                attempt_type="training_completion",
+                                stage=curriculum_stage or "training",
+                                outcome="completed",
+                                source="training_poller",
+                                action="auto_export",
+                                training_task_id=training_task_id,
+                                details=status_summary,
+                            ),
+                        )
+                        event_state = append_task_event(
+                            r.hgetall(f"agent:{task_id}"),
+                            source=training_task_id,
+                            target=task_id,
+                            relation="training_completed",
+                            node_type="training",
+                            label="completed",
+                            metadata={"status": "completed"},
+                        )
+                        r.hset(f"agent:{task_id}", mapping={"event_graph": json.dumps(event_state.get("event_graph", {}))})
                         agent_data = r.hgetall(f"agent:{task_id}")
                         project_name = agent_data.get("project_name", task_id)
                         r.hset(f"agent:{task_id}", mapping={
@@ -506,6 +559,29 @@ class YOLOTrainingOrchestrator:
                         return
                     elif status in ("failed", "error"):
                         auto_adjust_agent.stop()
+                        append_agent_attempt(
+                            r,
+                            task_id,
+                            build_attempt_record(
+                                attempt_type="training_completion",
+                                stage=curriculum_stage or "training",
+                                outcome="failed",
+                                source="training_poller",
+                                error=status_data.get("error", status),
+                                training_task_id=training_task_id,
+                                details=status_summary,
+                            ),
+                        )
+                        event_state = append_task_event(
+                            r.hgetall(f"agent:{task_id}"),
+                            source=training_task_id,
+                            target=task_id,
+                            relation="training_failed",
+                            node_type="training",
+                            label="failed",
+                            metadata={"status": "failed"},
+                        )
+                        r.hset(f"agent:{task_id}", mapping={"event_graph": json.dumps(event_state.get("event_graph", {}))})
                         r.hset(f"agent:{task_id}", mapping={
                             "status": "failed",
                             "error": f"GPU training failed: {status_data.get('error', status)}",
@@ -513,12 +589,36 @@ class YOLOTrainingOrchestrator:
                         })
                         return
                 except Exception as e:
+                    append_agent_attempt(
+                        r,
+                        task_id,
+                        build_attempt_record(
+                            attempt_type="training_poll",
+                            stage="training",
+                            outcome="error",
+                            source="training_poller",
+                            error=str(e),
+                            training_task_id=training_task_id,
+                        ),
+                    )
                     r.hset(f"agent:{task_id}", mapping={
                         "training_poll_error": str(e),
                     })
 
             # Timeout
             auto_adjust_agent.stop()
+            append_agent_attempt(
+                r,
+                task_id,
+                build_attempt_record(
+                    attempt_type="training_completion",
+                    stage="training",
+                    outcome="timeout",
+                    source="training_poller",
+                    error="Training timeout (>2h)",
+                    training_task_id=training_task_id,
+                ),
+            )
             r.hset(f"agent:{task_id}", mapping={
                 "status": "failed",
                 "error": "Training timeout (>2h)",
@@ -527,6 +627,18 @@ class YOLOTrainingOrchestrator:
         except Exception as e:
             # Top-level: prevent thread from crashing silently
             auto_adjust_agent.stop()
+            append_agent_attempt(
+                r,
+                task_id,
+                build_attempt_record(
+                    attempt_type="training_poll",
+                    stage="training",
+                    outcome="crashed",
+                    source="training_poller",
+                    error=str(e),
+                    training_task_id=training_task_id,
+                ),
+            )
             r.hset(f"agent:{task_id}", mapping={
                 "status": "failed",
                 "error": f"Polling crashed: {e}",

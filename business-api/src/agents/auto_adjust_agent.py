@@ -17,6 +17,22 @@ from typing import Optional
 
 import httpx
 
+from .worker_memory import (
+    append_agent_attempt,
+    append_autoadjust_attempt,
+    build_attempt_record,
+    extract_agent_submission,
+    sanitize_training_status,
+)
+try:
+    from ..api.task_registry import append_task_event
+except ImportError:  # pragma: no cover - compatibility with direct package imports
+    from api.task_registry import append_task_event
+from .plateau_planner import (
+    build_plateau_attempt_record,
+    build_plateau_decision,
+)
+
 
 def _get_redis_for_adjust():
     """Get Redis client for AutoAdjustAgent."""
@@ -103,51 +119,75 @@ class AutoAdjustAgent:
                 data_expansion_signal = status_data.get("data_expansion_signal") or {}
                 augment_boost_active = status_data.get("augment_boost_active", False)
                 strategies_triggered = status_data.get("strategies_triggered") or []
+                status_summary = sanitize_training_status(status_data)
+                plateau_decision = build_plateau_decision(status_summary, self._adjustments_triggered)
 
                 # Update Redis with current state
-                r.hset(f"autoadjust:{self.task_id}", mapping={
+                redis_mapping = {
                     "status": status,
                     "live_mAP50": str(live_mAP50) if live_mAP50 is not None else "",
                     "lr_decay_triggered": str(lr_decay_triggered),
                     "data_expansion_requested": str(data_expansion_requested),
                     "augment_boost_active": str(augment_boost_active),
                     "strategies_triggered": str(strategies_triggered),
+                    "status_summary": json.dumps(status_summary),
                     "last_checked": datetime.now().isoformat(),
-                })
+                }
+                if plateau_decision:
+                    redis_mapping["plateau_decision"] = json.dumps(plateau_decision)
+                    redis_mapping["plateau_selected_action"] = plateau_decision["selected"]["action"]
+                    redis_mapping["plateau_decision_rationale"] = plateau_decision["rationale"]
+                r.hset(f"autoadjust:{self.task_id}", mapping=redis_mapping)
+
+                if plateau_decision:
+                    record = build_plateau_attempt_record(
+                        task_id=self.task_id,
+                        training_task_id=self.training_task_id,
+                        decision=plateau_decision,
+                    )
+                    append_agent_attempt(r, self.task_id, record)
+                    append_autoadjust_attempt(r, self.task_id, record)
+                    event_state = append_task_event(
+                        r.hgetall(f"agent:{self.task_id}"),
+                        source=self.training_task_id,
+                        target=self.task_id,
+                        relation="plateau_decision",
+                        node_type="plateau",
+                        label=plateau_decision["selected"]["action"],
+                        metadata={
+                            "selected_action": plateau_decision["selected"]["action"],
+                            "candidate_count": plateau_decision["candidate_count"],
+                        },
+                    )
+                    r.hset(f"agent:{self.task_id}", mapping={"event_graph": json.dumps(event_state.get("event_graph", {}))})
 
                 # Don't act if training already finished
                 if status in ("completed", "failed", "cancelled"):
                     break
 
+                selected_action = plateau_decision["selected"]["action"] if plateau_decision else None
+
                 # Level 1: LR decay — auto-restart with halved lr0 and resume
-                if lr_decay_triggered and lr_decay_signal:
+                if selected_action == "lr_decay" and lr_decay_signal:
                     decay_count = lr_decay_signal.get("lr_decay_count", 1)
-                    # Check if we already triggered this round
-                    already_triggered = any(
-                        a.get("level") == 1 and a.get("decay_count") == decay_count
-                        for a in self._adjustments_triggered
+                    print(f"[AutoAdjust] Level 1: LR decay #{decay_count} — triggering auto-adjust")
+                    self._trigger_lr_adjustment(
+                        lr_decay_signal=lr_decay_signal,
+                        decay_count=decay_count,
+                        base_url=base_url,
+                        headers=headers,
+                        r=r,
                     )
-                    if not already_triggered and decay_count <= 3:
-                        print(f"[AutoAdjust] Level 1: LR decay #{decay_count} — triggering auto-adjust")
-                        self._trigger_lr_adjustment(
-                            lr_decay_signal=lr_decay_signal,
-                            decay_count=decay_count,
-                            base_url=base_url,
-                            headers=headers,
-                            r=r,
-                        )
 
                 # Level 3: Data expansion — run ActiveLearning + SemiSupervised pipeline
-                if data_expansion_requested and data_expansion_signal:
-                    already_expanded = any(a.get("level") == 3 for a in self._adjustments_triggered)
-                    if not already_expanded:
-                        print(f"[AutoAdjust] Level 3: Data expansion triggered")
-                        self._trigger_data_expansion(
-                            data_expansion_signal=data_expansion_signal,
-                            base_url=base_url,
-                            headers=headers,
-                            r=r,
-                        )
+                if selected_action == "data_expansion" and data_expansion_signal:
+                    print(f"[AutoAdjust] Level 3: Data expansion triggered")
+                    self._trigger_data_expansion(
+                        data_expansion_signal=data_expansion_signal,
+                        base_url=base_url,
+                        headers=headers,
+                        r=r,
+                    )
 
             except Exception as e:
                 print(f"[AutoAdjust] Error in polling loop: {e}")
@@ -171,7 +211,7 @@ class AutoAdjustAgent:
 
             # Get current task params from Redis
             task_data = r.hgetall(f"agent:{self.task_id}")
-            params = json.loads(task_data.get("params", "{}")) if task_data.get("params") else {}
+            params = extract_agent_submission(task_data)
 
             model = params.get("model", "yolo11m")
             data_yaml = params.get("data_yaml", "/home/wangxin/data/fire-smoke/data.yaml")
@@ -241,11 +281,64 @@ class AutoAdjustAgent:
                 "new_task_id": new_task_id,
                 "timestamp": datetime.now().isoformat(),
             })
+            record = build_attempt_record(
+                attempt_type="auto_adjust",
+                stage="lr_decay",
+                outcome="completed",
+                source="auto_adjust_agent",
+                action="restart_with_halved_lr",
+                training_task_id=new_training_task_id,
+                details={
+                    "old_lr": current_lr,
+                    "new_lr": new_lr,
+                    "decay_count": decay_count,
+                },
+            )
+            append_agent_attempt(r, self.task_id, record)
+            append_autoadjust_attempt(r, self.task_id, record)
+            event_state = append_task_event(
+                r.hgetall(f"agent:{self.task_id}"),
+                source=self.training_task_id,
+                target=new_training_task_id,
+                relation="auto_adjust_retry",
+                node_type="auto_adjust",
+                label="lr_decay",
+                metadata={
+                    "decay_count": decay_count,
+                    "old_lr": current_lr,
+                    "new_lr": new_lr,
+                },
+            )
+            r.hset(f"agent:{self.task_id}", mapping={"event_graph": json.dumps(event_state.get("event_graph", {}))})
 
             print(f"[AutoAdjust] Level 1 complete: new task={new_task_id}, lr={new_lr:.6f}, resume={best_pt}")
 
         except Exception as e:
             print(f"[AutoAdjust] Level 1 failed: {e}")
+            record = build_attempt_record(
+                attempt_type="auto_adjust",
+                stage="lr_decay",
+                outcome="failed",
+                source="auto_adjust_agent",
+                action="restart_with_halved_lr",
+                error=str(e),
+            )
+            append_agent_attempt(r, self.task_id, record)
+            append_autoadjust_attempt(r, self.task_id, record)
+            event_state = append_task_event(
+                r.hgetall(f"agent:{self.task_id}"),
+                source=self.training_task_id,
+                target=new_training_task_id,
+                relation="data_expansion_retry",
+                node_type="auto_adjust",
+                label="data_expansion",
+                metadata={
+                    "round": expansion_round,
+                    "pseudo_labels": len(filtered),
+                    "expanded_yaml": expanded_yaml,
+                },
+            )
+            r.hset(f"agent:{self.task_id}", mapping={"event_graph": json.dumps(event_state.get("event_graph", {}))})
             r.hset(f"agent:{self.task_id}", mapping={
                 "lr_adjustment_error": str(e),
             })
@@ -355,6 +448,17 @@ class AutoAdjustAgent:
                     "status": "no_data",
                     "timestamp": datetime.now().isoformat(),
                 })
+                record = build_attempt_record(
+                    attempt_type="auto_adjust",
+                    stage="data_expansion",
+                    outcome="skipped",
+                    source="auto_adjust_agent",
+                    action="expand_dataset",
+                    error="No unlabeled image directories found on GPU server",
+                    details={"round": expansion_round},
+                )
+                append_agent_attempt(r, self.task_id, record)
+                append_autoadjust_attempt(r, self.task_id, record)
                 return
 
             # Step 2: SemiSupervised — generate pseudo-labels via SSH on GPU server
@@ -457,7 +561,7 @@ class AutoAdjustAgent:
 
             # Step 4: Submit new training with expanded dataset
             task_data = r.hgetall(f"agent:{self.task_id}")
-            params = json.loads(task_data.get("params", "{}")) if task_data.get("params") else {}
+            params = extract_agent_submission(task_data)
             model = params.get("model", "yolo11m")
             imgsz = int(params.get("imgsz", 640))
             device = params.get("device", "cuda:0")
@@ -502,12 +606,47 @@ class AutoAdjustAgent:
                 "new_task_id": new_task_id,
                 "timestamp": datetime.now().isoformat(),
             })
+            record = build_attempt_record(
+                attempt_type="auto_adjust",
+                stage="data_expansion",
+                outcome="completed",
+                source="auto_adjust_agent",
+                action="expand_dataset",
+                training_task_id=new_training_task_id,
+                details={
+                    "round": expansion_round,
+                    "pseudo_labels": len(filtered),
+                    "expanded_yaml": expanded_yaml,
+                },
+            )
+            append_agent_attempt(r, self.task_id, record)
+            append_autoadjust_attempt(r, self.task_id, record)
 
             print(f"[AutoAdjust] Level 3 complete: new task={new_task_id}, "
                   f"pseudo_labels={len(filtered)}, yaml={expanded_yaml}")
 
         except Exception as e:
             print(f"[AutoAdjust] Level 3 failed: {e}")
+            record = build_attempt_record(
+                attempt_type="auto_adjust",
+                stage="data_expansion",
+                outcome="failed",
+                source="auto_adjust_agent",
+                action="expand_dataset",
+                error=str(e),
+            )
+            append_agent_attempt(r, self.task_id, record)
+            append_autoadjust_attempt(r, self.task_id, record)
+            event_state = append_task_event(
+                r.hgetall(f"agent:{self.task_id}"),
+                source=self.training_task_id,
+                target=self.task_id,
+                relation="plateau_action_failed",
+                node_type="plateau",
+                label="failed",
+                metadata={"stage": "data_expansion"},
+            )
+            r.hset(f"agent:{self.task_id}", mapping={"event_graph": json.dumps(event_state.get("event_graph", {}))})
             r.hset(f"agent:{self.task_id}", mapping={
                 "expansion_status": "failed",
                 "expansion_error": str(e),

@@ -5,13 +5,17 @@ from __future__ import annotations
 import json
 from datetime import datetime
 
+try:
+    from ..agents.event_graph import append_graph_event, normalize_event_graph
+except ImportError:  # pragma: no cover - compatibility with direct package imports
+    from agents.event_graph import append_graph_event, normalize_event_graph
 from .task_models import ExportStatusResponse, TrainStatusResponse
 
 TASK_TTL_SECONDS = 7 * 24 * 60 * 60
 
 # Schema version for Redis task records
 # Increment this when the schema changes and add migration logic below
-CURRENT_SCHEMA_VERSION = "v1"
+CURRENT_SCHEMA_VERSION = "v3"
 
 
 # ==================== Task State Machine ====================
@@ -134,20 +138,25 @@ def migrate_task_record(task_data: dict) -> dict:
     if schema_version == CURRENT_SCHEMA_VERSION:
         return task_data
 
-    # Migration: legacy -> v1
-    if schema_version == "legacy":
+    # Migration: legacy/v1/v2 -> v3
+    if schema_version in {"legacy", "v1", "v2"}:
         # Legacy records had "params" instead of "submission"
         if "params" in task_data and "submission" not in task_data:
             task_data["submission"] = task_data.pop("params")
-        # Legacy records didn't have schema_version
+        task_data.setdefault("attempt_memory", [])
+        task_data.setdefault("latest_attempt", None)
+        task_data.setdefault("event_graph", {})
         task_data["schema_version"] = CURRENT_SCHEMA_VERSION
         return task_data
 
     # If we don't know the schema version, try to normalize what we can
-    if schema_version not in (CURRENT_SCHEMA_VERSION, "legacy"):
+    if schema_version not in (CURRENT_SCHEMA_VERSION, "legacy", "v1", "v2"):
         # Normalize fields but don't recursively call migrate
         if "params" in task_data and "submission" not in task_data:
             task_data["submission"] = task_data.pop("params")
+        task_data.setdefault("attempt_memory", [])
+        task_data.setdefault("latest_attempt", None)
+        task_data.setdefault("event_graph", {})
         task_data["schema_version"] = CURRENT_SCHEMA_VERSION
 
     return task_data
@@ -183,6 +192,9 @@ def normalize_task_record(task_data: dict | None) -> dict | None:
         "registry_status",
         normalized.get("status", "submitted"),
     )
+    normalized["attempt_memory"] = list(normalized.get("attempt_memory") or [])
+    normalized["latest_attempt"] = normalized.get("latest_attempt")
+    normalized["event_graph"] = normalize_event_graph(normalized.get("event_graph"))
     return normalized
 
 
@@ -211,8 +223,47 @@ def build_task_record(
             "created_at": datetime.now().isoformat(),
             "submission": submission,
             "links": record_links,
+            "attempt_memory": [],
+            "latest_attempt": None,
+            "event_graph": {},
         }
     )
+
+
+def append_task_attempt(task_data: dict, attempt_record: dict, max_entries: int = 20) -> dict:
+    """Append a typed attempt record to a task record."""
+    normalized = normalize_task_record(task_data) or {}
+    history = list(normalized.get("attempt_memory") or [])
+    history.append(attempt_record)
+    normalized["attempt_memory"] = history[-max_entries:]
+    normalized["latest_attempt"] = attempt_record
+    return normalized
+
+
+def append_task_event(
+    task_data: dict,
+    *,
+    source: str,
+    target: str,
+    relation: str,
+    node_type: str | None = None,
+    label: str | None = None,
+    metadata: dict | None = None,
+    target_metadata: dict | None = None,
+) -> dict:
+    """Append a bounded graph event to a task record."""
+    normalized = normalize_task_record(task_data) or {}
+    normalized["event_graph"] = append_graph_event(
+        normalized.get("event_graph"),
+        source=source,
+        target=target,
+        relation=relation,
+        node_type=node_type,
+        label=label,
+        metadata=metadata,
+        target_metadata=target_metadata,
+    )
+    return normalized
 
 
 def store_task_in_redis(redis_client, task_data: dict) -> None:

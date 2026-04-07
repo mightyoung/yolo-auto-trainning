@@ -66,6 +66,9 @@ from ..services._shared import (
     _cancel_events,
     _cancel_lock,
     _retry_counts,
+    append_task_attempt,
+    append_task_event,
+    build_attempt_record,
     _run_benchmark_sync,
     _run_distill_sync,
     _run_export_sync,
@@ -390,6 +393,34 @@ async def get_training_status(
             "last_resubmitted_at": resubmitted_at,
             "resubmit_reason": reason,
         })
+        append_task_event(
+            task_id,
+            source=f"training:task:{task_id}",
+            target=f"training:task:{task_id}:running",
+            relation="auto_resubmit",
+            node_type="training",
+            label="running",
+            metadata={
+                "resubmit_count": resubmit_count,
+                "reason": reason,
+            },
+        )
+        append_task_attempt(
+            task_id,
+            build_attempt_record(
+                attempt_type="training_resubmit",
+                stage="training",
+                outcome="retried",
+                source="status_polling",
+                action="restart_background_worker",
+                error=reason,
+                training_task_id=task_id,
+                details={
+                    "resubmit_count": resubmit_count,
+                    "backoff_seconds": backoff,
+                },
+            ),
+        )
         task["status"] = "running"
         task["started_at"] = resubmitted_at
         task["progress"] = 0.0
