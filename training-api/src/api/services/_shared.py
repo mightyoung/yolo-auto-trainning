@@ -39,6 +39,7 @@ from ..store.task_store import (
     _tasks_cache,
     _tasks_lock,
 )
+from ..store.task_output import append_task_output
 
 # Module-level retry circuit breaker: task_id -> retry count
 _retry_counts: dict[str, int] = {}
@@ -69,6 +70,18 @@ def _record_training_attempt(
             details=details,
         ),
     )
+
+
+def _record_training_output(task_id: str, message: str, *, summary: str | None = None) -> None:
+    """Persist a bounded task output snapshot and sync it into Redis state."""
+    snapshot = append_task_output(task_id, message, summary=summary)
+    updated_task = None
+    with _tasks_lock:
+        if task_id in _tasks_cache:
+            _tasks_cache[task_id].update(snapshot)
+            updated_task = dict(_tasks_cache[task_id])
+    if updated_task is not None:
+        _task_set(task_id, updated_task)
 
 
 # ==================== Dynamic Training Manager ====================
@@ -150,6 +163,11 @@ def _run_training_sync(
             _tasks_cache[task_id]["status"] = "running"
             _tasks_cache[task_id]["started_at"] = datetime.now().isoformat()
             _task_set(task_id, _tasks_cache[task_id])
+            _record_training_output(
+                task_id,
+                f"Training started: model={model}, data={data_yaml}, epochs={epochs}, device={device}",
+                summary=f"training started {model}",
+            )
             append_task_event(
                 task_id,
                 source=task_id,
@@ -273,6 +291,11 @@ def _run_training_sync(
                 _tasks_cache[task_id]["metrics"] = result.metrics or {}
                 _tasks_cache[task_id]["model_path"] = str(result.model_path) if result.model_path else None
                 _tasks_cache[task_id]["early_stopped"] = result.early_stopped
+                _record_training_output(
+                    task_id,
+                    f"Training completed: model_path={result.model_path}, early_stopped={result.early_stopped}",
+                    summary=f"training completed {task_id}",
+                )
                 append_task_event(
                     task_id,
                     source=f"{task_id}:running",
@@ -351,6 +374,11 @@ def _run_training_sync(
             elif result.status == "cancelled":
                 _tasks_cache[task_id]["status"] = "cancelled"
                 _tasks_cache[task_id]["error"] = "Training cancelled by user"
+                _record_training_output(
+                    task_id,
+                    "Training cancelled by user",
+                    summary="training cancelled",
+                )
                 append_task_event(
                     task_id,
                     source=f"{task_id}:running",
@@ -374,6 +402,11 @@ def _run_training_sync(
             else:
                 _tasks_cache[task_id]["status"] = "failed"
                 _tasks_cache[task_id]["error"] = result.error or "Unknown error"
+                _record_training_output(
+                    task_id,
+                    f"Training failed: {result.error}",
+                    summary=f"training failed {task_id}",
+                )
                 append_task_event(
                     task_id,
                     source=f"{task_id}:running",
@@ -429,6 +462,11 @@ def _run_training_sync(
                 _tasks_cache[task_id]["status"] = "retrying"
                 _tasks_cache[task_id]["error"] = str(e)
                 _task_set(task_id, _tasks_cache[task_id])
+                _record_training_output(
+                    task_id,
+                    f"Training retrying after error: {e}",
+                    summary=f"training retrying {task_id}",
+                )
                 append_task_event(
                     task_id,
                     source=f"{task_id}:running",
@@ -450,6 +488,11 @@ def _run_training_sync(
                 logging.error(f"[{task_id}] Training failed after {max_retries + 1} attempts: {e}", exc_info=True)
                 _tasks_cache[task_id]["status"] = "failed"
                 _tasks_cache[task_id]["error"] = f"Failed after {max_retries + 1} attempts: {last_error}"
+                _record_training_output(
+                    task_id,
+                    f"Training failed after retries: {last_error}",
+                    summary=f"training exhausted retries {task_id}",
+                )
                 _record_training_attempt(
                     task_id,
                     attempt_type="training",
@@ -511,6 +554,11 @@ def _run_export_sync(
         _tasks_cache[task_id]["status"] = "running"
         _tasks_cache[task_id]["started_at"] = datetime.now().isoformat()
         _task_set(task_id, _tasks_cache[task_id])
+        _record_training_output(
+            task_id,
+            f"Export started: model={model_path}, platform={platform}, formats={formats}",
+            summary=f"export started {task_id}",
+        )
         append_task_event(
             task_id,
             source=task_id,
@@ -537,6 +585,11 @@ def _run_export_sync(
                 _tasks_cache[task_id]["size_mb"] = result.size_mb
                 _tasks_cache[task_id]["format"] = result.format
                 _tasks_cache[task_id]["formats"] = formats
+                _record_training_output(
+                    task_id,
+                    f"Export completed: {result.model_path} ({result.size_mb:.1f}MB)",
+                    summary=f"export completed {task_id}",
+                )
                 append_task_event(
                     task_id,
                     source=f"{task_id}:running",
@@ -554,6 +607,11 @@ def _run_export_sync(
             else:
                 _tasks_cache[task_id]["status"] = "failed"
                 _tasks_cache[task_id]["error"] = result.error or "Unknown export error"
+                _record_training_output(
+                    task_id,
+                    f"Export failed: {result.error}",
+                    summary=f"export failed {task_id}",
+                )
                 append_task_event(
                     task_id,
                     source=f"{task_id}:running",
@@ -656,6 +714,11 @@ def _run_benchmark_sync(
         _tasks_cache[task_id]["status"] = "completed"
         _tasks_cache[task_id]["progress"] = 100.0
         _tasks_cache[task_id]["benchmark"] = result.to_dict()
+        _record_training_output(
+            task_id,
+            f"Benchmark completed: FPS={result.fps}, size={result.size_mb}MB",
+            summary=f"benchmark completed {task_id}",
+        )
         logging.info(
             f"[{task_id}] Benchmark completed: FPS={result.fps}, "
             f"params={result.params_m}M, gflops={result.gflops}, "
@@ -665,6 +728,11 @@ def _run_benchmark_sync(
         logging.error(f"[{task_id}] Benchmark exception: {e}", exc_info=True)
         _tasks_cache[task_id]["status"] = "failed"
         _tasks_cache[task_id]["error"] = str(e)
+        _record_training_output(
+            task_id,
+            f"Benchmark failed: {e}",
+            summary=f"benchmark failed {task_id}",
+        )
     finally:
         _tasks_cache[task_id]["completed_at"] = datetime.now().isoformat()
         _task_set(task_id, _tasks_cache[task_id])
@@ -692,6 +760,11 @@ def _run_hpo_sync(
     _tasks_cache[task_id]["status"] = "running"
     _tasks_cache[task_id]["started_at"] = datetime.now().isoformat()
     _task_set(task_id, _tasks_cache[task_id])
+    _record_training_output(
+        task_id,
+        f"HPO started: model={model}, data={data_yaml}, samples={num_samples}, max_concurrent={max_concurrent}",
+        summary=f"hpo started {task_id}",
+    )
 
     try:
         from src.training.hpo_ray import run_hpo_tuning
@@ -718,16 +791,31 @@ def _run_hpo_sync(
         _tasks_cache[task_id]["best_trial_id"] = best_result.trial_id
         _tasks_cache[task_id]["best_metrics"] = best_result.metrics
         _tasks_cache[task_id]["best_checkpoint"] = best_result.checkpoint_path
+        _record_training_output(
+            task_id,
+            f"HPO completed: best_trial={best_result.trial_id}, mAP={best_result.metrics.get('mAP50', 0):.4f}",
+            summary=f"hpo completed {task_id}",
+        )
         logging.info(f"[{task_id}] HPO completed: best_trial={best_result.trial_id}, mAP={best_result.metrics.get('mAP50', 0):.4f}")
 
     except ImportError as e:
         logging.error(f"[{task_id}] HPO requires Ray Tune: {e}")
         _tasks_cache[task_id]["status"] = "failed"
         _tasks_cache[task_id]["error"] = f"Ray Tune not available: {e}"
+        _record_training_output(
+            task_id,
+            f"HPO failed: {e}",
+            summary=f"hpo failed {task_id}",
+        )
     except Exception as e:
         logging.error(f"[{task_id}] HPO exception: {e}", exc_info=True)
         _tasks_cache[task_id]["status"] = "failed"
         _tasks_cache[task_id]["error"] = str(e)
+        _record_training_output(
+            task_id,
+            f"HPO failed: {e}",
+            summary=f"hpo failed {task_id}",
+        )
     finally:
         _tasks_cache[task_id]["completed_at"] = datetime.now().isoformat()
         _task_set(task_id, _tasks_cache[task_id])
@@ -879,6 +967,11 @@ def _run_distill_sync(
     _tasks_cache[task_id]["status"] = "running"
     _tasks_cache[task_id]["started_at"] = datetime.now().isoformat()
     _task_set(task_id, _tasks_cache[task_id])
+    _record_training_output(
+        task_id,
+        f"Curriculum started: model={model}, data={data_yaml}",
+        summary=f"curriculum started {task_id}",
+    )
 
     try:
         from src.training.distillation import DistillationTrainer

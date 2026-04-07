@@ -16,6 +16,7 @@ TASK_TTL_SECONDS = 7 * 24 * 60 * 60
 # Schema version for Redis task records
 # Increment this when the schema changes and add migration logic below
 CURRENT_SCHEMA_VERSION = "v3"
+TASK_TERMINAL_STATUSES = frozenset({"completed", "failed", "cancelled"})
 
 
 # ==================== Task State Machine ====================
@@ -61,6 +62,11 @@ class InvalidTransitionError(Exception):
             f"Task {task_id}: invalid transition {current_status} -> {target_status}. "
             f"Allowed transitions: {set(allowed) if allowed else 'none (terminal state)'}"
         )
+
+
+def is_terminal_task_status(status: str | None) -> bool:
+    """Return True when the task status is terminal."""
+    return bool(status and status.lower() in TASK_TERMINAL_STATUSES)
 
 
 def validate_transition(current_status: str, target_status: str) -> bool:
@@ -195,6 +201,10 @@ def normalize_task_record(task_data: dict | None) -> dict | None:
     normalized["attempt_memory"] = list(normalized.get("attempt_memory") or [])
     normalized["latest_attempt"] = normalized.get("latest_attempt")
     normalized["event_graph"] = normalize_event_graph(normalized.get("event_graph"))
+    normalized["output_path"] = normalized.get("output_path")
+    normalized["output_offset"] = int(normalized.get("output_offset") or 0)
+    normalized["output_summary"] = normalized.get("output_summary")
+    normalized["output_capped"] = bool(normalized.get("output_capped", False))
     return normalized
 
 
@@ -226,6 +236,10 @@ def build_task_record(
             "attempt_memory": [],
             "latest_attempt": None,
             "event_graph": {},
+            "output_path": None,
+            "output_offset": 0,
+            "output_summary": None,
+            "output_capped": False,
         }
     )
 
@@ -415,6 +429,10 @@ def build_training_status_response(task: dict) -> TrainStatusResponse:
         resubmit_count=result.get("resubmit_count"),
         last_resubmitted_at=result.get("last_resubmitted_at"),
         resubmit_reason=result.get("resubmit_reason"),
+        output_path=task.get("output_path"),
+        output_offset=task.get("output_offset"),
+        output_summary=task.get("output_summary"),
+        output_capped=task.get("output_capped"),
     )
 
 
@@ -438,4 +456,8 @@ def build_export_status_response(task: dict) -> ExportStatusResponse:
         error=result.get("error", task.get("error")),
         started_at=result.get("started_at"),
         completed_at=result.get("completed_at"),
+        output_path=task.get("output_path"),
+        output_offset=task.get("output_offset"),
+        output_summary=task.get("output_summary"),
+        output_capped=task.get("output_capped"),
     )

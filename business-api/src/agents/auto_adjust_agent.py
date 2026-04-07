@@ -24,6 +24,9 @@ from .worker_memory import (
     extract_agent_submission,
     sanitize_training_status,
 )
+from .coordinator_summary import summarize_attempt, summarize_tool_batch
+from .operation_policy import require_operation_allowed
+from .task_output import append_agent_output
 try:
     from ..api.task_registry import append_task_event
 except ImportError:  # pragma: no cover - compatibility with direct package imports
@@ -169,6 +172,17 @@ class AutoAdjustAgent:
 
                 # Level 1: LR decay — auto-restart with halved lr0 and resume
                 if selected_action == "lr_decay" and lr_decay_signal:
+                    append_agent_output(
+                        r,
+                        self.task_id,
+                        f"Plateau decision selected lr_decay at count={lr_decay_signal.get('lr_decay_count', 1)}",
+                        summary=summarize_tool_batch(
+                            "plateau decision",
+                            outcome="selected",
+                            detail="lr_decay",
+                            subject=self.task_id,
+                        ),
+                    )
                     decay_count = lr_decay_signal.get("lr_decay_count", 1)
                     print(f"[AutoAdjust] Level 1: LR decay #{decay_count} — triggering auto-adjust")
                     self._trigger_lr_adjustment(
@@ -181,6 +195,17 @@ class AutoAdjustAgent:
 
                 # Level 3: Data expansion — run ActiveLearning + SemiSupervised pipeline
                 if selected_action == "data_expansion" and data_expansion_signal:
+                    append_agent_output(
+                        r,
+                        self.task_id,
+                        "Plateau decision selected data_expansion",
+                        summary=summarize_tool_batch(
+                            "plateau decision",
+                            outcome="selected",
+                            detail="data_expansion",
+                            subject=self.task_id,
+                        ),
+                    )
                     print(f"[AutoAdjust] Level 3: Data expansion triggered")
                     self._trigger_data_expansion(
                         data_expansion_signal=data_expansion_signal,
@@ -236,6 +261,10 @@ class AutoAdjustAgent:
             # Start new training with halved lr0 + resume
             hpo_params = {"lr0": new_lr}
 
+            require_operation_allowed(
+                "gpu_training_submit",
+                context={"task_id": self.task_id, "training_task_id": self.training_task_id, "device": device},
+            )
             with httpx.Client(timeout=15.0) as client:
                 resp = client.post(
                     f"{base_url}/api/v1/internal/train/start",
@@ -296,6 +325,18 @@ class AutoAdjustAgent:
             )
             append_agent_attempt(r, self.task_id, record)
             append_autoadjust_attempt(r, self.task_id, record)
+            append_agent_output(
+                r,
+                self.task_id,
+                f"LR decay restart submitted: {new_training_task_id}",
+                summary=summarize_attempt(
+                    "auto_adjust",
+                    "lr_decay",
+                    "completed",
+                    action="restart_with_halved_lr",
+                    detail=f"{new_training_task_id} lr={new_lr:.6f}",
+                ),
+            )
             event_state = append_task_event(
                 r.hgetall(f"agent:{self.task_id}"),
                 source=self.training_task_id,
@@ -325,6 +366,18 @@ class AutoAdjustAgent:
             )
             append_agent_attempt(r, self.task_id, record)
             append_autoadjust_attempt(r, self.task_id, record)
+            append_agent_output(
+                r,
+                self.task_id,
+                f"LR decay adjustment failed: {e}",
+                summary=summarize_attempt(
+                    "auto_adjust",
+                    "lr_decay",
+                    "failed",
+                    action="restart_with_halved_lr",
+                    error=str(e),
+                ),
+            )
             event_state = append_task_event(
                 r.hgetall(f"agent:{self.task_id}"),
                 source=self.training_task_id,
@@ -410,6 +463,10 @@ class AutoAdjustAgent:
                     print(f"[AutoAdjust] Found {count} unlabeled images in {img_dir}")
 
                     # Run ActiveLearning on GPU server via SSH
+                    require_operation_allowed(
+                        "ssh_dataset_check",
+                        context={"dataset_path": img_dir, "source": "active_learning"},
+                    )
                     al_script = (
                         "import sys, json\n"
                         "sys.path.insert(0, '/home/wangxin/yolo-auto-training/training-api/src')\n"
@@ -459,6 +516,18 @@ class AutoAdjustAgent:
                 )
                 append_agent_attempt(r, self.task_id, record)
                 append_autoadjust_attempt(r, self.task_id, record)
+                append_agent_output(
+                    r,
+                    self.task_id,
+                    "No unlabeled data found for expansion",
+                    summary=summarize_attempt(
+                        "auto_adjust",
+                        "data_expansion",
+                        "skipped",
+                        action="expand_dataset",
+                        error="No unlabeled image directories found on GPU server",
+                    ),
+                )
                 return
 
             # Step 2: SemiSupervised — generate pseudo-labels via SSH on GPU server
@@ -476,6 +545,10 @@ class AutoAdjustAgent:
 
                     # Build Python list string for sample paths
                     paths_repr = repr(sample_paths)
+                    require_operation_allowed(
+                        "ssh_dataset_download",
+                        context={"dataset_path": model_path, "source": "semi_supervised"},
+                    )
                     ss_script = (
                         "import sys, json\n"
                         "sys.path.insert(0, '/home/wangxin/yolo-auto-training/training-api/src')\n"
@@ -509,6 +582,17 @@ class AutoAdjustAgent:
 
             if not pseudo_labels:
                 print("[AutoAdjust] No pseudo-labels generated")
+                append_agent_output(
+                    r,
+                    self.task_id,
+                    "No pseudo-labels generated",
+                    summary=summarize_attempt(
+                        "auto_adjust",
+                        "data_expansion",
+                        "skipped",
+                        action="generate_pseudo_labels",
+                    ),
+                )
                 return
 
             # Step 3: Filter and create expanded dataset via SSH
@@ -525,6 +609,10 @@ class AutoAdjustAgent:
                     ssh.connect(ssh_host, username=ssh_user, password=ssh_pass, timeout=10)
 
                     pseudo_repr = repr(pseudo_labels[:500])
+                    require_operation_allowed(
+                        "ssh_dataset_yaml",
+                        context={"dataset_path": expanded_yaml or f"/home/wangxin/data/expanded_{self.task_id}"},
+                    )
                     filter_script = (
                         "import sys, json\n"
                         "sys.path.insert(0, '/home/wangxin/yolo-auto-training/training-api/src')\n"
@@ -569,6 +657,10 @@ class AutoAdjustAgent:
             new_task_id = f"train_{uuid.uuid4().hex[:8]}"
 
             with httpx.Client(timeout=15.0) as client:
+                require_operation_allowed(
+                    "gpu_training_submit",
+                    context={"task_id": self.task_id, "training_task_id": self.training_task_id, "device": device},
+                )
                 resp = client.post(
                     f"{base_url}/api/v1/internal/train/start",
                     json={
@@ -621,6 +713,18 @@ class AutoAdjustAgent:
             )
             append_agent_attempt(r, self.task_id, record)
             append_autoadjust_attempt(r, self.task_id, record)
+            append_agent_output(
+                r,
+                self.task_id,
+                f"Data expansion submitted: {new_training_task_id}",
+                summary=summarize_attempt(
+                    "auto_adjust",
+                    "data_expansion",
+                    "completed",
+                    action="expand_dataset",
+                    detail=f"{new_training_task_id} pseudo_labels={len(filtered)}",
+                ),
+            )
 
             print(f"[AutoAdjust] Level 3 complete: new task={new_task_id}, "
                   f"pseudo_labels={len(filtered)}, yaml={expanded_yaml}")
@@ -637,6 +741,18 @@ class AutoAdjustAgent:
             )
             append_agent_attempt(r, self.task_id, record)
             append_autoadjust_attempt(r, self.task_id, record)
+            append_agent_output(
+                r,
+                self.task_id,
+                f"Data expansion failed: {e}",
+                summary=summarize_attempt(
+                    "auto_adjust",
+                    "data_expansion",
+                    "failed",
+                    action="expand_dataset",
+                    error=str(e),
+                ),
+            )
             event_state = append_task_event(
                 r.hgetall(f"agent:{self.task_id}"),
                 source=self.training_task_id,

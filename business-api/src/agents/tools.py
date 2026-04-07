@@ -50,6 +50,7 @@ if str(_biz_api_root) not in sys.path:
     sys.path.insert(0, str(_biz_api_root))
 
 from src.data.discovery import DatasetDiscovery, DatasetInfo
+from .operation_policy import require_operation_allowed
 
 
 def get_llm():
@@ -103,6 +104,7 @@ class DatasetDownloadTool:
     description = "Download a dataset from a specific source (roboflow, kaggle, or huggingface)"
 
     def _run(self, dataset_name: str, source: str = "roboflow") -> str:
+        require_operation_allowed("dataset_download", context={"dataset_name": dataset_name, "source": source})
         discovery = DatasetDiscovery()
         dataset_info = DatasetInfo(
             source=source,
@@ -128,6 +130,10 @@ class TrainModelTool:
 
     def _run(self, dataset_path: str, model_size: str = "yolo11m", epochs: int = 100) -> str:
         try:
+            require_operation_allowed(
+                "gpu_training_submit",
+                context={"dataset_path": dataset_path, "model_size": model_size, "epochs": epochs},
+            )
             from src.api.training_client import TrainingAPIClient
             client = TrainingAPIClient()
             task_id = f"train_{uuid.uuid4().hex[:8]}"
@@ -150,5 +156,9 @@ class ExportModelTool:
     description = "Export trained model to ONNX or TensorRT format for deployment"
 
     def _run(self, model_path: str, platform: str = "jetson_orin") -> str:
+        require_operation_allowed(
+            "model_export",
+            context={"model_path": model_path, "platform": platform},
+        )
         task_id = f"export_{platform}"
         return f"Export task submitted: task_id={task_id}, platform={platform}"

@@ -51,6 +51,9 @@ from .ssh_ops import (
     generate_data_yaml_ssh,
 )
 from .auto_adjust_agent import AutoAdjustAgent
+from .coordinator_summary import build_compact_summary, summarize_attempt, summarize_tool_batch
+from .operation_policy import require_operation_allowed
+from .task_output import append_agent_output
 from .worker_memory import (
     append_agent_attempt,
     build_attempt_record,
@@ -179,6 +182,17 @@ class YOLOTrainingOrchestrator:
                 lines.append(f"\n[CrewAI unavailable - using direct discovery fallback]")
 
             result_str = "\n".join(lines)
+            append_agent_output(
+                r,
+                task_id,
+                result_str,
+                summary=summarize_tool_batch(
+                    "dataset discovery",
+                    outcome="completed",
+                    detail=f"{len(results)} candidates",
+                    subject=best.name,
+                ),
+            )
 
             r.hset(f"agent:{task_id}", mapping={
                 "status": "awaiting_confirmation",
@@ -253,17 +267,37 @@ class YOLOTrainingOrchestrator:
 
         try:
             # Check if dataset already exists with images
+            require_operation_allowed(
+                "ssh_dataset_check",
+                context={"dataset_name": dataset_name, "dataset_path": dataset_path, "source": source},
+            )
             skip_download = check_dataset_exists(dataset_path, source)
 
             if not skip_download:
                 # Download dataset to GPU server via SSH
+                require_operation_allowed(
+                    "dataset_download",
+                    context={"dataset_name": dataset_name, "dataset_path": dataset_path, "source": source},
+                )
                 if source == "coco_builtin":
                     download_coco_builtin_ssh(dataset_path)
                 else:
                     download_dataset_ssh(dataset_name, dataset_path, source)
 
             # Generate data.yaml on GPU server (if missing or stale)
+            require_operation_allowed("ssh_dataset_yaml", context={"dataset_path": dataset_path})
             generate_data_yaml_ssh(dataset_path)
+            append_agent_output(
+                r,
+                task_id,
+                f"Dataset ready: {dataset_name} -> {dataset_path}",
+                summary=summarize_tool_batch(
+                    "dataset preparation",
+                    outcome="completed",
+                    detail="download skipped" if skip_download else "downloaded",
+                    subject=dataset_name,
+                ),
+            )
 
             r.hset(f"agent:{task_id}", mapping={
                 "status": "awaiting_training_confirmation",
@@ -337,6 +371,10 @@ class YOLOTrainingOrchestrator:
         })
 
         try:
+            require_operation_allowed(
+                "gpu_training_submit",
+                context={"task_id": task_id, "device": device, "model": model},
+            )
             from src.api.training_client import TrainingAPIClient
             client = TrainingAPIClient(
                 base_url=os.getenv("TRAINING_API_URL", "http://localhost:8001"),
@@ -417,11 +455,23 @@ class YOLOTrainingOrchestrator:
                 metadata={"training_type": "curriculum"},
             )
             r.hset(f"agent:{task_id}", mapping={"event_graph": json.dumps(event_state.get("event_graph", {}))})
+            append_agent_output(
+                r,
+                task_id,
+                f"Training submitted: task_id={training_task_id}, model={model}, epochs={epochs}, imgsz={imgsz}",
+                summary=summarize_tool_batch(
+                    "training submission",
+                    outcome="completed",
+                    detail=f"{training_task_id} {model}",
+                    subject=task_id,
+                ),
+            )
 
             # Poll Training API for completion (runs in background thread)
             self._poll_training(task_id, training_task_id, client)
 
             # Start the GPU task queue scheduler for autonomous dispatch
+            require_operation_allowed("gpu_scheduler_start", context={"task_id": task_id})
             start_scheduler()
         except Exception as e:
             r.hset(f"agent:{task_id}", mapping={
@@ -429,6 +479,18 @@ class YOLOTrainingOrchestrator:
                 "error": f"Training submission failed: {e}",
                 "completed_at": datetime.now().isoformat(),
             })
+            append_agent_output(
+                r,
+                task_id,
+                f"Training submission failed: {e}",
+                summary=summarize_attempt(
+                    "training",
+                    "submission",
+                    "failed",
+                    action="start_curriculum_sync",
+                    error=str(e),
+                ),
+            )
 
     def _poll_training(self, task_id: str, training_task_id: str, client) -> None:
         """Poll Training API for training completion and update Redis.
@@ -554,6 +616,18 @@ class YOLOTrainingOrchestrator:
                             "progress": "90.0",
                             "model_path": model_path,
                         })
+                        append_agent_output(
+                            r,
+                            task_id,
+                            f"Training completed: model_path={model_path}",
+                            summary=summarize_attempt(
+                                "training",
+                                curriculum_stage or "training",
+                                "completed",
+                                action="auto_export",
+                                detail=model_path,
+                            ),
+                        )
                         # Trigger auto export + deploy
                         self._auto_export_and_deploy(task_id, model_path, project_name)
                         return
@@ -587,6 +661,18 @@ class YOLOTrainingOrchestrator:
                             "error": f"GPU training failed: {status_data.get('error', status)}",
                             "completed_at": datetime.now().isoformat(),
                         })
+                        append_agent_output(
+                            r,
+                            task_id,
+                            f"Training failed: {status_data.get('error', status)}",
+                            summary=summarize_attempt(
+                                "training",
+                                curriculum_stage or "training",
+                                "failed",
+                                action="poll_training",
+                                error=status_data.get("error", status),
+                            ),
+                        )
                         return
                 except Exception as e:
                     append_agent_attempt(
@@ -604,6 +690,18 @@ class YOLOTrainingOrchestrator:
                     r.hset(f"agent:{task_id}", mapping={
                         "training_poll_error": str(e),
                     })
+                    append_agent_output(
+                        r,
+                        task_id,
+                        f"Training poll error: {e}",
+                        summary=summarize_attempt(
+                            "training",
+                            "poll",
+                            "error",
+                            action="status_check",
+                            error=str(e),
+                        ),
+                    )
 
             # Timeout
             auto_adjust_agent.stop()
@@ -624,6 +722,18 @@ class YOLOTrainingOrchestrator:
                 "error": "Training timeout (>2h)",
                 "completed_at": datetime.now().isoformat(),
             })
+            append_agent_output(
+                r,
+                task_id,
+                "Training timeout after 2 hours",
+                summary=summarize_attempt(
+                    "training",
+                    "poll",
+                    "timeout",
+                    action="status_check",
+                    error="Training timeout (>2h)",
+                ),
+            )
         except Exception as e:
             # Top-level: prevent thread from crashing silently
             auto_adjust_agent.stop()
@@ -644,11 +754,27 @@ class YOLOTrainingOrchestrator:
                 "error": f"Polling crashed: {e}",
                 "completed_at": datetime.now().isoformat(),
             })
+            append_agent_output(
+                r,
+                task_id,
+                f"Training polling crashed: {e}",
+                summary=summarize_attempt(
+                    "training",
+                    "poll",
+                    "crashed",
+                    action="status_check",
+                    error=str(e),
+                ),
+            )
 
     def _auto_export_and_deploy(self, task_id: str, model_path: str, project_name: str) -> None:
         """Automatically export and deploy after training completes."""
         def _do_export_deploy():
             try:
+                require_operation_allowed(
+                    "model_export",
+                    context={"task_id": task_id, "model_path": model_path, "project_name": project_name},
+                )
                 from src.api.training_client import TrainingAPIClient
                 client = TrainingAPIClient(
                     base_url=os.getenv("TRAINING_API_URL", "http://localhost:8001"),
@@ -658,6 +784,17 @@ class YOLOTrainingOrchestrator:
 
                 export_task_id = f"{task_id}_export"
                 print(f"[{task_id}] Auto-export triggered: model={model_path}")
+                append_agent_output(
+                    r,
+                    task_id,
+                    f"Auto-export triggered for {model_path}",
+                    summary=summarize_tool_batch(
+                        "auto export",
+                        outcome="started",
+                        detail=project_name,
+                        subject=task_id,
+                    ),
+                )
 
                 # Step 1: Submit export
                 export_resp = client.start_export_sync(
@@ -691,6 +828,18 @@ class YOLOTrainingOrchestrator:
                                 "export_status": "failed",
                                 "export_error": str(status_resp.get("error", export_status)),
                             })
+                            append_agent_output(
+                                r,
+                                task_id,
+                                f"Export failed: {status_resp.get('error', export_status)}",
+                                summary=summarize_attempt(
+                                    "export",
+                                    "poll",
+                                    "failed",
+                                    action="get_export_status_sync",
+                                    error=str(status_resp.get("error", export_status)),
+                                ),
+                            )
                             return
                     except Exception as poll_err:
                         print(f"[{task_id}] Export poll error: {poll_err}")
@@ -698,6 +847,18 @@ class YOLOTrainingOrchestrator:
                 if not export_done:
                     print(f"[{task_id}] Export timed out after 5 minutes")
                     r.hset(f"agent:{task_id}", mapping={"export_status": "timeout"})
+                    append_agent_output(
+                        r,
+                        task_id,
+                        "Export timed out after 5 minutes",
+                        summary=summarize_attempt(
+                            "export",
+                            "poll",
+                            "timeout",
+                            action="get_export_status_sync",
+                            error="Export timed out after 5 minutes",
+                        ),
+                    )
                     return
 
                 print(f"[{task_id}] Export completed successfully")
@@ -705,9 +866,25 @@ class YOLOTrainingOrchestrator:
                     "export_status": "completed",
                     "exported_model_path": status_resp.get("export_path", model_path),
                 })
+                append_agent_output(
+                    r,
+                    task_id,
+                    f"Export completed: {status_resp.get('export_path', model_path)}",
+                    summary=summarize_attempt(
+                        "export",
+                        "poll",
+                        "completed",
+                        action="start_export_sync",
+                        detail=status_resp.get("export_path", model_path),
+                    ),
+                )
 
                 # Step 3: Deploy
                 try:
+                    require_operation_allowed(
+                        "gpu_training_submit",
+                        context={"task_id": task_id, "platform": "jetson_orin"},
+                    )
                     deploy_resp = client.submit_deployment(
                         model_path=model_path,
                         platform="jetson_orin",
@@ -720,12 +897,35 @@ class YOLOTrainingOrchestrator:
                         "deploy_platform": deploy_resp.get("platform", "jetson_orin"),
                         "deployment_config": json.dumps(deploy_resp.get("config", {})),
                     })
+                    append_agent_output(
+                        r,
+                        task_id,
+                        f"Deployment submitted: {deploy_resp.get('deploy_id', '')}",
+                        summary=summarize_tool_batch(
+                            "deployment",
+                            outcome="completed",
+                            detail=deploy_resp.get("platform", "jetson_orin"),
+                            subject=project_name,
+                        ),
+                    )
                 except Exception as deploy_err:
                     print(f"[{task_id}] Auto-deploy failed: {deploy_err}")
                     r.hset(f"agent:{task_id}", mapping={
                         "deployment_status": "failed",
                         "deployment_error": str(deploy_err),
                     })
+                    append_agent_output(
+                        r,
+                        task_id,
+                        f"Deployment failed: {deploy_err}",
+                        summary=summarize_attempt(
+                            "deployment",
+                            "deploy",
+                            "failed",
+                            action="submit_deployment",
+                            error=str(deploy_err),
+                        ),
+                    )
 
             except Exception as e:
                 print(f"[{task_id}] Auto-export/deploy failed: {e}")
@@ -733,6 +933,18 @@ class YOLOTrainingOrchestrator:
                     "export_status": "failed",
                     "export_error": str(e),
                 })
+                append_agent_output(
+                    r,
+                    task_id,
+                    f"Auto-export/deploy failed: {e}",
+                    summary=summarize_attempt(
+                        "export",
+                        "deploy",
+                        "failed",
+                        action="start_export_sync",
+                        error=str(e),
+                    ),
+                )
 
         import threading
         t = threading.Thread(target=_do_export_deploy, daemon=True)

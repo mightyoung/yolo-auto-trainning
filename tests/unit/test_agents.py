@@ -17,6 +17,14 @@ from unittest.mock import Mock, patch, MagicMock
 from pathlib import Path
 import sys
 import importlib
+import os
+
+os.environ.setdefault("GPU_SERVER_HOST", "127.0.0.1")
+os.environ.setdefault("GPU_SERVER_USER", "test-user")
+os.environ.setdefault("GPU_SERVER_PASS", "test-pass")
+os.environ.setdefault("ROBOFLOW_API_KEY", "test-roboflow-key")
+os.environ.setdefault("TRAINING_API_URL", "http://localhost:8001")
+os.environ.setdefault("TRAINING_API_KEY", "test-training-key")
 
 # Mock crewai before importing so the module can be loaded even when crewai is not installed
 sys.modules['crewai'] = MagicMock()

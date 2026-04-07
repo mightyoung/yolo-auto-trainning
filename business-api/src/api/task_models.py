@@ -26,6 +26,10 @@ class TrainStatusResponse(BaseModel):
     resubmit_count: int | None = None
     last_resubmitted_at: str | None = None
     resubmit_reason: str | None = None
+    output_path: str | None = None
+    output_offset: int | None = None
+    output_summary: str | None = None
+    output_capped: bool | None = None
 
 
 class ExportStatusResponse(BaseModel):
@@ -43,6 +47,10 @@ class ExportStatusResponse(BaseModel):
     error: str | None = None
     started_at: str | None = None
     completed_at: str | None = None
+    output_path: str | None = None
+    output_offset: int | None = None
+    output_summary: str | None = None
+    output_capped: bool | None = None
 
 
 class TaskExecutionSummaryResponse(BaseModel):
@@ -69,6 +77,10 @@ class TaskRecordResponse(BaseModel):
     execution: dict[str, Any] | None = None
     result: dict[str, Any] | None = None
     result_summary: dict[str, Any] | None = None
+    output_path: str | None = None
+    output_offset: int | None = None
+    output_summary: str | None = None
+    output_capped: bool | None = None
     error: str | None = None
 
 

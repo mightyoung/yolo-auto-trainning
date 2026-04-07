@@ -11,6 +11,8 @@ Contains standalone SSH helper methods for:
 
 import os
 
+from .operation_policy import require_operation_allowed
+
 
 def get_ssh_credentials() -> tuple[str, str, str]:
     """Get SSH credentials from environment.
@@ -41,6 +43,7 @@ def check_dataset_exists(dataset_path: str, source: str = "roboflow") -> bool:
     """
     import paramiko
 
+    require_operation_allowed("ssh_dataset_check", context={"dataset_path": dataset_path, "source": source})
     ssh_host, ssh_user, ssh_pass = get_ssh_credentials()
 
     # For coco_builtin, try multiple known path variants
@@ -80,6 +83,10 @@ def download_dataset_ssh(dataset_name: str, dataset_path: str, source: str) -> N
     """Download Roboflow dataset to GPU server via SSH."""
     import paramiko
 
+    require_operation_allowed(
+        "ssh_dataset_download",
+        context={"dataset_name": dataset_name, "dataset_path": dataset_path, "source": source},
+    )
     ssh_host, ssh_user, ssh_pass = get_ssh_credentials()
 
     api_key = os.getenv("ROBOFLOW_API_KEY")
@@ -169,6 +176,10 @@ def download_coco_builtin_ssh(dataset_path: str) -> None:
     """
     import paramiko
 
+    require_operation_allowed(
+        "dataset_download",
+        context={"dataset_path": dataset_path, "source": "coco_builtin"},
+    )
     ssh_host, ssh_user, ssh_pass = get_ssh_credentials()
 
     script = (
@@ -297,6 +308,7 @@ def generate_data_yaml_ssh(dataset_path: str) -> None:
     """Generate data.yaml on GPU server based on actual dataset structure."""
     import paramiko
 
+    require_operation_allowed("ssh_dataset_yaml", context={"dataset_path": dataset_path})
     ssh_host, ssh_user, ssh_pass = get_ssh_credentials()
 
     script = (

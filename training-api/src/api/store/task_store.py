@@ -17,6 +17,7 @@ _redis_client = None
 _tasks_cache: dict = {}
 _tasks_lock = threading.Lock()
 MAX_ATTEMPT_HISTORY = 20
+TASK_TERMINAL_STATUSES = frozenset({"completed", "failed", "cancelled", "success", "error", "done", "exported"})
 
 
 def _resolve_redis_client():
@@ -40,7 +41,16 @@ def normalize_task_record(task: dict | None) -> dict | None:
     normalized["attempt_memory"] = list(normalized.get("attempt_memory") or [])
     normalized["latest_attempt"] = normalized.get("latest_attempt")
     normalized["event_graph"] = normalize_event_graph(normalized.get("event_graph"))
+    normalized["output_path"] = normalized.get("output_path")
+    normalized["output_offset"] = int(normalized.get("output_offset") or 0)
+    normalized["output_summary"] = normalized.get("output_summary")
+    normalized["output_capped"] = bool(normalized.get("output_capped", False))
     return normalized
+
+
+def is_terminal_task_status(status: str | None) -> bool:
+    """Return True when a training-side task is terminal."""
+    return bool(status and status.lower() in TASK_TERMINAL_STATUSES)
 
 
 def build_attempt_record(
@@ -55,6 +65,9 @@ def build_attempt_record(
     details: dict | None = None,
 ) -> dict:
     """Build a typed attempt record for bounded retry/failure history."""
+    summary_parts = [attempt_type, stage, outcome]
+    if action:
+        summary_parts.append(action)
     record = {
         "timestamp": datetime.now().isoformat(),
         "attempt_type": attempt_type,
@@ -62,6 +75,7 @@ def build_attempt_record(
         "outcome": outcome,
         "source": source,
         "action": action,
+        "summary": " ".join(part for part in summary_parts if part),
     }
     if error is not None:
         record["error"] = error

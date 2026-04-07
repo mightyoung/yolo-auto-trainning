@@ -6,6 +6,8 @@ import json
 from datetime import datetime
 from typing import Any
 
+from .coordinator_summary import build_compact_summary
+
 
 MAX_ATTEMPT_HISTORY = 20
 SUMMARY_TEXT_LIMIT = 240
@@ -88,6 +90,13 @@ def build_attempt_record(
     details: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Create a typed attempt/reflection record."""
+    summary = build_compact_summary(
+        kind=attempt_type,
+        stage=stage,
+        outcome=outcome,
+        action=action,
+        detail=error,
+    )
     return {
         "timestamp": datetime.now().isoformat(),
         "attempt_type": attempt_type,
@@ -95,6 +104,7 @@ def build_attempt_record(
         "outcome": outcome,
         "source": source,
         "action": action,
+        "summary": summary,
         "error": _truncate_text(error),
         "training_task_id": training_task_id,
         "details": details or {},

@@ -80,10 +80,15 @@ from ..services._shared import (
     _tasks_cache,
     _tasks_lock,
 )
+from ..store.task_output import append_task_output
+from .continuous import router as continuous_router
+from .deploy import router as deploy_router
 
 # ==================== Create Router ====================
 
 router = APIRouter()
+router.include_router(continuous_router)
+router.include_router(deploy_router)
 
 
 # ==================== Task Storage ====================
@@ -114,6 +119,11 @@ async def start_training(
 
     # Create task record
     task_id = request.task_id
+    output_snapshot = append_task_output(
+        task_id,
+        f"Training submitted: model={request.model}, data={request.data_yaml}, epochs={request.epochs}, device={request.device}",
+        summary=f"training submitted {task_id}",
+    )
     _task_set(task_id, {
         "task_id": task_id,
         "type": "training",
@@ -132,6 +142,8 @@ async def start_training(
         "augmentation_preset": request.augmentation_preset,
         "resume_from": request.resume_from,
         "created_at": datetime.now().isoformat()
+        ,
+        **output_snapshot,
     })
 
     # Create cancel event for this task
@@ -241,6 +253,11 @@ async def start_curriculum_training(
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid API key")
 
     task_id = request.task_id
+    output_snapshot = append_task_output(
+        task_id,
+        f"Curriculum submitted: data={request.data_yaml}, device={request.device}",
+        summary=f"curriculum submitted {task_id}",
+    )
     _task_set(task_id, {
         "task_id": task_id,
         "type": "curriculum",
@@ -251,6 +268,7 @@ async def start_curriculum_training(
         "curriculum_stage": "pending",
         "curriculum_stage_history": [],
         "created_at": datetime.now().isoformat(),
+        **output_snapshot,
     })
 
     with _cancel_lock:
@@ -919,6 +937,11 @@ async def start_export(
         )
 
     task_id = request.task_id
+    output_snapshot = append_task_output(
+        task_id,
+        f"Export submitted: model={request.model_path}, platform={request.platform}, formats={request.formats}",
+        summary=f"export submitted {task_id}",
+    )
     _task_set(task_id, {
         "task_id": task_id,
         "type": "export",
@@ -929,7 +952,8 @@ async def start_export(
         "formats": request.formats,
         "int8_quantize": request.int8_quantize,
         "progress": 0.0,
-        "created_at": datetime.now().isoformat()
+        "created_at": datetime.now().isoformat(),
+        **output_snapshot,
     })
 
     # Launch background export thread
@@ -1003,6 +1027,11 @@ async def run_benchmark(
         )
 
     task_id = request.task_id
+    output_snapshot = append_task_output(
+        task_id,
+        f"Benchmark submitted: model={request.model_path}, format={request.format}, imgsz={request.imgsz}",
+        summary=f"benchmark submitted {task_id}",
+    )
     _task_set(task_id, {
         "task_id": task_id,
         "type": "benchmark",
@@ -1013,7 +1042,8 @@ async def run_benchmark(
         "warmup": request.warmup,
         "runs": request.runs,
         "progress": 0.0,
-        "created_at": datetime.now().isoformat()
+        "created_at": datetime.now().isoformat(),
+        **output_snapshot,
     })
 
     # Launch benchmark in background thread
@@ -2058,343 +2088,4 @@ async def evaluate_dataset(
         raise HTTPException(status_code=500, detail=f"Evaluation failed: {str(e)}")
 
 
-# ==================== Drift Detection Endpoints ====================
-
-class DriftCheckRequest(BaseModel):
-    """Data drift check request."""
-    model_name: str = Field(..., description="Model name being monitored")
-    reference_image_dir: str = Field(..., description="Path to reference (training) image directory")
-    current_image_dir: str = Field(..., description="Path to current production image directory")
-    metrics_history: list[float] | None = Field(
-        None,
-        description="Optional historical mAP values for concept drift detection"
-    )
-    psi_threshold: float = Field(0.2, description="PSI threshold for data drift (default 0.2)")
-
-
-class DriftResponse(BaseModel):
-    """Drift detection response."""
-    model_name: str
-    data_drift_score: float
-    concept_drift_detected: bool
-    recommendation: str
-    feature_drift: dict[str, float]
-    timestamp: str
-
-
-@router.post("/monitor/drift-check", response_model=DriftResponse)
-async def check_drift(
-    request: DriftCheckRequest,
-    http_request: Request,
-    x_api_key: str = Header(..., alias="X-API-Key"),
-    _: None = Depends(check_rate_limit)
-):
-    """
-    Detect data and concept drift for a deployed model.
-
-    Compares statistical distributions between reference (training) images
-    and current production images using Population Stability Index (PSI).
-
-    PSI interpretation:
-      < 0.1  : no drift  (stable)
-      0.1-0.2: slight drift (monitor)
-      > 0.2  : significant drift (retrain recommended)
-
-    Concept drift is detected when recent rolling mAP average is
-    significantly lower than the historical baseline.
-    """
-    if not verify_internal_api_key(x_api_key):
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid API key"
-        )
-
-    # Resolve image directories
-    ref_dir = Path(request.reference_image_dir)
-    cur_dir = Path(request.current_image_dir)
-
-    if not ref_dir.exists():
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Reference image directory not found: {ref_dir}"
-        )
-    if not cur_dir.exists():
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Current image directory not found: {cur_dir}"
-        )
-
-    # Collect image paths
-    image_exts = {".jpg", ".jpeg", ".png", ".bmp", ".webp"}
-    ref_images = [str(p) for p in ref_dir.iterdir() if p.suffix.lower() in image_exts]
-    cur_images = [str(p) for p in cur_dir.iterdir() if p.suffix.lower() in image_exts]
-
-    if not ref_images:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"No images found in reference directory: {ref_dir}"
-        )
-    if not cur_images:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"No images found in current directory: {cur_dir}"
-        )
-
-    # Ensure monitoring module directory exists
-    monitoring_dir = Path(__file__).parent.parent / "monitoring"
-    monitoring_dir.mkdir(parents=True, exist_ok=True)
-
-    from src.monitoring.drift_detector import DriftDetector
-
-    detector = DriftDetector(psi_threshold=request.psi_threshold)
-
-    report = detector.check_drift(
-        model_name=request.model_name,
-        reference_images=ref_images,
-        current_images=cur_images,
-        metrics_history=request.metrics_history,
-    )
-
-    return DriftResponse(
-        model_name=request.model_name,
-        data_drift_score=report.data_drift_score,
-        concept_drift_detected=report.concept_drift_detected,
-        recommendation=report.recommendation,
-        feature_drift=report.feature_drift,
-        timestamp=report.timestamp,
-    )
-
-
-# ==================== Edge Deployment Config Endpoints ====================
-
-class EdgeConfigResponse(BaseModel):
-    """Edge device inference configuration response."""
-    device: str
-    model_path: str
-    batch_size: int
-    stream_count: int
-    workspace_mb: int
-    recommended_format: str
-    fallback_formats: list[str]
-    precision: str
-    dynamic_batch: bool
-    imgsz: int
-    export_kwargs: dict[str, Any]
-    notes: list[str]
-
-
-@router.get("/deploy/edge-config/{model_name}", response_model=EdgeConfigResponse)
-async def get_edge_config(
-    model_name: str,
-    device: str = "jetson_orin",
-    imgsz: int = 640,
-    http_request: Request = None,
-    x_api_key: str = Header(..., alias="X-API-Key"),
-    _: None = Depends(check_rate_limit)
-):
-    """
-    Generate optimal inference configuration for a target edge device.
-
-    Returns device-specific runtime parameters including:
-      - batch_size, stream_count, workspace_mb
-      - recommended model format (engine-fp16, engine-int8, onnx, tflite)
-      - export kwargs for the recommended format
-      - Performance notes for the device
-
-    Supported devices:
-      jetson_orin, jetson_orin_nx, jetson_tx2, jetson_nano,
-      rk3588, mobile, edge_tpu, generic
-    """
-    if not verify_internal_api_key(x_api_key):
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid API key"
-        )
-
-    from src.deployment.edge_config import EdgeProfileGenerator
-
-    generator = EdgeProfileGenerator()
-    config = generator.generate_config(
-        device=device,
-        model_path=model_name,
-        imgsz=imgsz,
-    )
-
-    return EdgeConfigResponse(**config)
-
-
-@router.get("/deploy/edge-devices")
-async def list_edge_devices(
-    http_request: Request = None,
-    x_api_key: str = Header(..., alias="X-API-Key"),
-    _: None = Depends(check_rate_limit)
-):
-    """List all supported edge device profiles."""
-    if not verify_internal_api_key(x_api_key):
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid API key"
-        )
-
-    from src.deployment.edge_config import EdgeProfileGenerator
-
-    generator = EdgeProfileGenerator()
-    return {
-        "devices": generator.list_devices(),
-        "note": "Use GET /deploy/edge-config/{model_name}?device=<device> to get full config"
-    }
-
-
-# ==================== Continuous Training Pipeline Endpoints ====================
-
-# Singleton pipeline instance shared across requests
-_continous_pipeline_instance = None
-
-
-def _get_continuous_pipeline():
-    global _continous_pipeline_instance
-    if _continous_pipeline_instance is None:
-        from src.pipeline.continuous_training import ContinuousTrainingPipeline
-        redis_client = get_redis_client()
-        _continous_pipeline_instance = ContinuousTrainingPipeline(redis_client=redis_client)
-    return _continous_pipeline_instance
-
-
-class ContinuousTrainingRequest(BaseModel):
-    model_name: str = Field("yolo11m", description="Base model to fine-tune")
-    task_id: str = Field(..., description="Task identifier for the new training run")
-    drift_threshold: float = Field(0.05, description="Fractional mAP drop that triggers retrain (0.0-1.0)")
-    ab_test_duration_hours: int = Field(24, description="A/B test duration in hours")
-    output_dir: str = Field("/home/wangxin/runs", description="Output directory for model artifacts")
-
-
-class DriftCheckRequest(BaseModel):
-    current_map: float = Field(..., description="Current production model mAP (0.0-1.0)")
-    historical_avg: float = Field(..., description="Long-running average mAP (0.0-1.0)")
-    threshold: float | None = Field(None, description="Override drift threshold")
-
-
-class ABTestStartRequest(BaseModel):
-    model_a: str = Field(..., description="Production (control) model path or name")
-    model_b: str = Field(..., description="Candidate model path or name")
-    duration_hours: int = Field(24, description="Test duration in hours")
-    min_samples: int = Field(100, description="Minimum inference samples before evaluating")
-
-
-class RollbackRequest(BaseModel):
-    current_model: str | None = Field(None, description="Model to replace")
-    previous_model: str | None = Field(None, description="Model to restore")
-
-
-@router.post("/pipeline/continuous/start")
-async def start_continuous_training(
-    request: ContinuousTrainingRequest,
-    http_request: Request,
-    x_api_key: str = Header(..., alias="X-API-Key"),
-    _: None = Depends(check_rate_limit)
-):
-    if not verify_internal_api_key(x_api_key):
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid API key")
-    pipeline = _get_continuous_pipeline()
-    pipeline_id = pipeline.start_retrain_pipeline(task_id=request.task_id, model_name=request.model_name, output_dir=request.output_dir)
-    return {"pipeline_id": pipeline_id, "task_id": request.task_id, "model_name": request.model_name, "status": "started", "message": f"Continuous training pipeline started for model {request.model_name}"}
-
-
-@router.get("/pipeline/continuous/status")
-async def get_continuous_training_status(
-    http_request: Request,
-    x_api_key: str = Header(..., alias="X-API-Key"),
-    _: None = Depends(check_rate_limit)
-):
-    if not verify_internal_api_key(x_api_key):
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid API key")
-    return _get_continuous_pipeline().get_status()
-
-
-@router.post("/pipeline/continuous/drift-check")
-async def check_drift(
-    request: DriftCheckRequest,
-    http_request: Request,
-    x_api_key: str = Header(..., alias="X-API-Key"),
-    _: None = Depends(check_rate_limit)
-):
-    if not verify_internal_api_key(x_api_key):
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid API key")
-    pipeline = _get_continuous_pipeline()
-    decision = pipeline.check_drift_and_decide(current_map=request.current_map, historical_avg=request.historical_avg, threshold=request.threshold)
-    return {"action": decision.action, "drift_score": decision.drift_score, "message": decision.message}
-
-
-@router.post("/pipeline/continuous/ab-test")
-async def start_ab_test(
-    request: ABTestStartRequest,
-    http_request: Request,
-    background_tasks: BackgroundTasks,
-    x_api_key: str = Header(..., alias="X-API-Key"),
-    _: None = Depends(check_rate_limit)
-):
-    if not verify_internal_api_key(x_api_key):
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid API key")
-    pipeline = _get_continuous_pipeline()
-    pipeline._transition_stage(pipeline.STAGE_AB_TESTING)
-    loop = asyncio.get_event_loop()
-    loop.run_in_executor(None, pipeline.run_ab_test, request.model_a, request.model_b, request.duration_hours, request.min_samples)
-    return {"status": "started", "model_a": request.model_a, "model_b": request.model_b, "duration_hours": request.duration_hours, "message": f"A/B test started: {request.model_a} vs {request.model_b}"}
-
-
-@router.get("/pipeline/continuous/ab-test/result")
-async def get_ab_test_result(
-    http_request: Request,
-    x_api_key: str = Header(..., alias="X-API-Key"),
-    _: None = Depends(check_rate_limit)
-):
-    if not verify_internal_api_key(x_api_key):
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid API key")
-    pipeline = _get_continuous_pipeline()
-    results = pipeline._ab_test_results
-    if not results:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="No A/B test results available")
-    return results[-1].to_dict()
-
-
-@router.post("/pipeline/continuous/rollback")
-async def rollback_model(
-    request: RollbackRequest,
-    http_request: Request,
-    x_api_key: str = Header(..., alias="X-API-Key"),
-    _: None = Depends(check_rate_limit)
-):
-    if not verify_internal_api_key(x_api_key):
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid API key")
-    pipeline = _get_continuous_pipeline()
-    success = pipeline.auto_rollback(current_model=request.current_model, previous_model=request.previous_model)
-    if success:
-        return {"status": "rolled_back", "message": f"Rolled back to {request.previous_model or 'production model'}"}
-    raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Rollback failed")
-
-
-@router.post("/pipeline/continuous/promote")
-async def promote_candidate(
-    candidate_model: str,
-    http_request: Request,
-    x_api_key: str = Header(..., alias="X-API-Key"),
-    _: None = Depends(check_rate_limit)
-):
-    if not verify_internal_api_key(x_api_key):
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid API key")
-    pipeline = _get_continuous_pipeline()
-    pipeline.promote_candidate(candidate_model)
-    return {"status": "promoted", "candidate_model": candidate_model, "message": f"Model {candidate_model} promoted to production"}
-
-
-@router.post("/pipeline/continuous/reset")
-async def reset_continuous_pipeline(
-    http_request: Request,
-    x_api_key: str = Header(..., alias="X-API-Key"),
-    _: None = Depends(check_rate_limit)
-):
-    if not verify_internal_api_key(x_api_key):
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid API key")
-    pipeline = _get_continuous_pipeline()
-    pipeline.reset()
-    return {"status": "reset", "message": "Continuous training pipeline reset to idle"}
+# deployment and monitoring routes were split into routes/deploy.py

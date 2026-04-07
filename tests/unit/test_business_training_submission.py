@@ -577,6 +577,49 @@ def test_training_status_matches_task_detail_execution_snapshot():
     assert status_payload["resubmit_reason"] == execution["resubmit_reason"]
 
 
+def test_training_status_exposes_output_summary():
+    _install_business_src_package()
+
+    mock_redis = Mock()
+    mock_redis.get.return_value = json.dumps({
+        "task_id": "train_123",
+        "task_type": "training",
+        "user_id": "test-user",
+        "registry_status": "running",
+        "status": "running",
+        "created_at": "2026-03-30T09:00:00",
+        "submission": {"model": "yolo11n"},
+        "output_path": "/tmp/train_123.log",
+        "output_offset": 1024,
+        "output_summary": "training started yolo11n",
+        "output_capped": False,
+    })
+    mock_training_client = Mock()
+    mock_training_client.get_task_status = AsyncMock(return_value={
+        "task_id": "train_123",
+        "status": "running",
+        "progress": 0.25,
+    })
+
+    from src.api import gateway
+    from src.api import routes
+
+    gateway.app.dependency_overrides[routes.get_current_user] = _mock_current_user
+    gateway.app.dependency_overrides[routes.check_rate_limit] = lambda: None
+    try:
+        client = _build_client(mock_redis, mock_training_client)
+        response = client.get("/api/v1/train/status/train_123", headers=_auth_headers())
+    finally:
+        gateway.app.dependency_overrides.clear()
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["output_path"] == "/tmp/train_123.log"
+    assert payload["output_offset"] == 1024
+    assert payload["output_summary"] == "training started yolo11n"
+    assert payload["output_capped"] is False
+
+
 def test_training_status_falls_back_to_registry_state_when_execution_unavailable():
     _install_business_src_package()
 
@@ -706,6 +749,53 @@ def test_export_status_matches_task_detail_execution_snapshot():
     assert status_payload["imgsz"] == execution["imgsz"]
     assert status_payload["formats"] == execution["formats"]
     assert status_payload["export_path"] == execution["export_path"]
+
+
+def test_export_status_exposes_output_summary():
+    _install_business_src_package()
+
+    mock_redis = Mock()
+    mock_redis.get.return_value = json.dumps({
+        "task_id": "export_123",
+        "task_type": "export",
+        "user_id": "test-user",
+        "registry_status": "running",
+        "status": "running",
+        "created_at": "2026-03-30T09:00:00",
+        "submission": {
+            "model_path": "/tmp/best.pt",
+            "platform": "jetson_orin",
+            "imgsz": 640,
+        },
+        "output_path": "/tmp/export_123.log",
+        "output_offset": 2048,
+        "output_summary": "export started onnx",
+        "output_capped": True,
+    })
+    mock_training_client = Mock()
+    mock_training_client.get_task_status = AsyncMock(return_value={
+        "task_id": "export_123",
+        "status": "running",
+        "progress": 0.1,
+    })
+
+    from src.api import gateway
+    from src.api import routes
+
+    gateway.app.dependency_overrides[routes.get_current_user] = _mock_current_user
+    gateway.app.dependency_overrides[routes.check_rate_limit] = lambda: None
+    try:
+        client = _build_client(mock_redis, mock_training_client)
+        response = client.get("/api/v1/deploy/export/status/export_123", headers=_auth_headers())
+    finally:
+        gateway.app.dependency_overrides.clear()
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["output_path"] == "/tmp/export_123.log"
+    assert payload["output_offset"] == 2048
+    assert payload["output_summary"] == "export started onnx"
+    assert payload["output_capped"] is True
 
 
 def test_export_status_falls_back_to_registry_submission_when_execution_unavailable():
