@@ -35,6 +35,10 @@ from .plateau_planner import (
     build_plateau_attempt_record,
     build_plateau_decision,
 )
+from .strategy_governor import (
+    build_strategy_proposal,
+    store_pending_strategy_proposal,
+)
 
 
 def _get_redis_for_adjust():
@@ -69,9 +73,10 @@ class AutoAdjustAgent:
         agent.stop()    # Terminates gracefully
     """
 
-    def __init__(self, task_id: str, training_task_id: str):
+    def __init__(self, task_id: str, training_task_id: str, *, proposal_only: bool = False):
         self.task_id = task_id
         self.training_task_id = training_task_id
+        self.proposal_only = proposal_only
         self._thread: Optional[threading.Thread] = None
         self._stop_event = threading.Event()
         self._adjustments_triggered: list[dict] = []
@@ -90,6 +95,48 @@ class AutoAdjustAgent:
         if self._thread and self._thread.is_alive():
             self._thread.join(timeout=10)
         print(f"[AutoAdjust] Stopped for task {self.task_id}")
+
+    def update_training_task_id(self, training_task_id: str) -> None:
+        """Switch the active child training task once the committer starts a new run."""
+        self.training_task_id = training_task_id
+
+    def _emit_strategy_proposal(self, r, decision: dict, *, selected_action: str) -> None:
+        """Persist a proposal for the Business-side committer to consume."""
+        proposal = build_strategy_proposal(
+            parent_run_id=self.task_id,
+            child_training_task_id=self.training_task_id,
+            decision=decision,
+            proposal_id=f"proposal_{uuid.uuid4().hex[:12]}",
+        )
+        store_pending_strategy_proposal(r, self.task_id, proposal)
+        append_agent_output(
+            r,
+            self.task_id,
+            f"Strategy proposal emitted: {selected_action}",
+            summary=summarize_tool_batch(
+                "strategy proposal",
+                outcome="proposed",
+                detail=selected_action,
+                subject=self.task_id,
+            ),
+        )
+        event_state = append_task_event(
+            r.hgetall(f"agent:{self.task_id}"),
+            source=self.training_task_id,
+            target=self.task_id,
+            relation="strategy_change_proposed",
+            node_type="strategy",
+            label=selected_action,
+            metadata=proposal,
+        )
+        r.hset(
+            f"agent:{self.task_id}",
+            mapping={
+                "event_graph": json.dumps(event_state.get("event_graph", {})),
+                "strategy_ledger": json.dumps(event_state.get("strategy_ledger", [])),
+                "latest_strategy_proposal": json.dumps(proposal),
+            },
+        )
 
     def _run(self) -> None:
         """Main polling loop."""
@@ -184,14 +231,18 @@ class AutoAdjustAgent:
                         ),
                     )
                     decay_count = lr_decay_signal.get("lr_decay_count", 1)
-                    print(f"[AutoAdjust] Level 1: LR decay #{decay_count} — triggering auto-adjust")
-                    self._trigger_lr_adjustment(
-                        lr_decay_signal=lr_decay_signal,
-                        decay_count=decay_count,
-                        base_url=base_url,
-                        headers=headers,
-                        r=r,
-                    )
+                    if self.proposal_only:
+                        print(f"[AutoAdjust] Proposal-only: LR decay #{decay_count}")
+                        self._emit_strategy_proposal(r, plateau_decision, selected_action=selected_action)
+                    else:
+                        print(f"[AutoAdjust] Level 1: LR decay #{decay_count} — triggering auto-adjust")
+                        self._trigger_lr_adjustment(
+                            lr_decay_signal=lr_decay_signal,
+                            decay_count=decay_count,
+                            base_url=base_url,
+                            headers=headers,
+                            r=r,
+                        )
 
                 # Level 3: Data expansion — run ActiveLearning + SemiSupervised pipeline
                 if selected_action == "data_expansion" and data_expansion_signal:
@@ -206,13 +257,17 @@ class AutoAdjustAgent:
                             subject=self.task_id,
                         ),
                     )
-                    print(f"[AutoAdjust] Level 3: Data expansion triggered")
-                    self._trigger_data_expansion(
-                        data_expansion_signal=data_expansion_signal,
-                        base_url=base_url,
-                        headers=headers,
-                        r=r,
-                    )
+                    if self.proposal_only:
+                        print("[AutoAdjust] Proposal-only: data expansion")
+                        self._emit_strategy_proposal(r, plateau_decision, selected_action=selected_action)
+                    else:
+                        print(f"[AutoAdjust] Level 3: Data expansion triggered")
+                        self._trigger_data_expansion(
+                            data_expansion_signal=data_expansion_signal,
+                            base_url=base_url,
+                            headers=headers,
+                            r=r,
+                        )
 
             except Exception as e:
                 print(f"[AutoAdjust] Error in polling loop: {e}")
@@ -227,9 +282,16 @@ class AutoAdjustAgent:
         base_url: str,
         headers: dict,
         r,
-    ) -> None:
+        *,
+        new_task_id: str | None = None,
+        proposal: dict | None = None,
+        raise_on_error: bool = False,
+        lease_refresh=None,
+    ) -> dict | None:
         """Cancel current task and restart with halved lr0 + resume_from best.pt."""
         try:
+            if lease_refresh:
+                lease_refresh()
             current_lr = self._lr0_history[-1]
             new_lr = max(current_lr * 0.5, 1e-6)
             self._lr0_history.append(new_lr)
@@ -249,9 +311,11 @@ class AutoAdjustAgent:
             best_pt = f"{current_output_dir}/weights/best.pt"
 
             # Generate new task ID
-            new_task_id = f"train_{uuid.uuid4().hex[:8]}"
+            new_task_id = new_task_id or f"train_{uuid.uuid4().hex[:8]}"
 
             # Cancel current training via Training API
+            if lease_refresh:
+                lease_refresh()
             with httpx.Client(timeout=15.0) as client:
                 client.post(
                     f"{base_url}/api/v1/internal/train/cancel/{self.training_task_id}",
@@ -265,6 +329,8 @@ class AutoAdjustAgent:
                 "gpu_training_submit",
                 context={"task_id": self.task_id, "training_task_id": self.training_task_id, "device": device},
             )
+            if lease_refresh:
+                lease_refresh()
             with httpx.Client(timeout=15.0) as client:
                 resp = client.post(
                     f"{base_url}/api/v1/internal/train/start",
@@ -345,6 +411,8 @@ class AutoAdjustAgent:
                 node_type="auto_adjust",
                 label="lr_decay",
                 metadata={
+                    "proposal_id": proposal.get("proposal_id") if proposal else None,
+                    "commit_id": proposal.get("commit_id") if proposal else None,
                     "decay_count": decay_count,
                     "old_lr": current_lr,
                     "new_lr": new_lr,
@@ -353,6 +421,12 @@ class AutoAdjustAgent:
             r.hset(f"agent:{self.task_id}", mapping={"event_graph": json.dumps(event_state.get("event_graph", {}))})
 
             print(f"[AutoAdjust] Level 1 complete: new task={new_task_id}, lr={new_lr:.6f}, resume={best_pt}")
+            return {
+                "new_task_id": new_task_id,
+                "new_training_task_id": new_training_task_id,
+                "new_lr": new_lr,
+                "resume_from": best_pt,
+            }
 
         except Exception as e:
             print(f"[AutoAdjust] Level 1 failed: {e}")
@@ -378,23 +452,12 @@ class AutoAdjustAgent:
                     error=str(e),
                 ),
             )
-            event_state = append_task_event(
-                r.hgetall(f"agent:{self.task_id}"),
-                source=self.training_task_id,
-                target=new_training_task_id,
-                relation="data_expansion_retry",
-                node_type="auto_adjust",
-                label="data_expansion",
-                metadata={
-                    "round": expansion_round,
-                    "pseudo_labels": len(filtered),
-                    "expanded_yaml": expanded_yaml,
-                },
-            )
-            r.hset(f"agent:{self.task_id}", mapping={"event_graph": json.dumps(event_state.get("event_graph", {}))})
             r.hset(f"agent:{self.task_id}", mapping={
                 "lr_adjustment_error": str(e),
             })
+            if raise_on_error:
+                raise
+            return None
 
     def _trigger_data_expansion(
         self,
@@ -402,9 +465,16 @@ class AutoAdjustAgent:
         base_url: str,
         headers: dict,
         r,
-    ) -> None:
+        *,
+        new_task_id: str | None = None,
+        proposal: dict | None = None,
+        raise_on_error: bool = False,
+        lease_refresh=None,
+    ) -> dict | None:
         """Run ActiveLearning + SemiSupervised pipeline to expand dataset."""
         try:
+            if lease_refresh:
+                lease_refresh()
             target_mAP = data_expansion_signal.get("target_mAP50", 0.90)
             current_mAP = data_expansion_signal.get("current_mAP50", 0)
             expansion_round = sum(1 for a in self._adjustments_triggered if a.get("level") == 3) + 1
@@ -422,7 +492,9 @@ class AutoAdjustAgent:
 
             if not model_path:
                 print("[AutoAdjust] No model path found, skipping data expansion")
-                return
+                if raise_on_error:
+                    raise RuntimeError("No model path found for data expansion")
+                return None
 
             # Step 1: ActiveLearning — select most uncertain samples via SSH on GPU server
             unlabeled_dirs = [
@@ -434,6 +506,8 @@ class AutoAdjustAgent:
             selected_samples = []
             # SSH bridge: check GPU server filesystem via paramiko
             try:
+                if lease_refresh:
+                    lease_refresh()
                 import paramiko
                 ssh_host = os.getenv("GPU_SERVER_HOST")
                 ssh_user = os.getenv("GPU_SERVER_USER")
@@ -528,13 +602,17 @@ class AutoAdjustAgent:
                         error="No unlabeled image directories found on GPU server",
                     ),
                 )
-                return
+                if raise_on_error:
+                    raise RuntimeError("No unlabeled image directories found on GPU server")
+                return None
 
             # Step 2: SemiSupervised — generate pseudo-labels via SSH on GPU server
             pseudo_labels = []
             sample_paths = [s["path"] for s in selected_samples[:500]]
             if sample_paths:
                 try:
+                    if lease_refresh:
+                        lease_refresh()
                     import paramiko
                     ssh_host = os.getenv("GPU_SERVER_HOST")
                     ssh_user = os.getenv("GPU_SERVER_USER")
@@ -593,13 +671,17 @@ class AutoAdjustAgent:
                         action="generate_pseudo_labels",
                     ),
                 )
-                return
+                if raise_on_error:
+                    raise RuntimeError("No pseudo-labels generated for data expansion")
+                return None
 
             # Step 3: Filter and create expanded dataset via SSH
             filtered = []
             expanded_yaml = None
             if pseudo_labels:
                 try:
+                    if lease_refresh:
+                        lease_refresh()
                     import paramiko
                     ssh_host = os.getenv("GPU_SERVER_HOST")
                     ssh_user = os.getenv("GPU_SERVER_USER")
@@ -620,7 +702,7 @@ class AutoAdjustAgent:
                         f"ss = SemiSupervisedPipeline(confidence_threshold=0.75)\n"
                         f"pseudo_labels = [PseudoLabel(**p) for p in {pseudo_repr}]\n"
                         f"filtered = ss.filter_pseudo_labels(pseudo_labels, min_boxes=1, max_boxes=50)\n"
-                        f"expanded_dir = '/home/wangxin/data/expanded_{self.task_id}'\n"
+                        f"expanded_dir = '/home/wangxin/data/expanded_{new_task_id or self.task_id}_{proposal.get('commit_id', 'draft') if proposal else 'draft'}'\n"
                         f"expanded_yaml = ss.create_pseudo_dataset(filtered, output_dir=expanded_dir, class_names=['fire', 'smoke'])\n"
                         "print(json.dumps({'filtered': len(filtered), 'yaml': expanded_yaml}))"
                     )
@@ -635,6 +717,7 @@ class AutoAdjustAgent:
                             result = json.loads(output)
                             filtered_count = result.get("filtered", 0)
                             expanded_yaml = result.get("yaml")
+                            filtered = pseudo_labels[:filtered_count]
                             print(f"[AutoAdjust] Filtered to {filtered_count} quality pseudo-labels")
                             if expanded_yaml:
                                 print(f"[AutoAdjust] Expanded dataset created: {expanded_yaml}")
@@ -645,7 +728,9 @@ class AutoAdjustAgent:
                     print(f"[AutoAdjust] SSH-based filter/create failed: {e}")
 
             if not filtered or not expanded_yaml:
-                return
+                if raise_on_error:
+                    raise RuntimeError("Expanded dataset was not materialized")
+                return None
 
             # Step 4: Submit new training with expanded dataset
             task_data = r.hgetall(f"agent:{self.task_id}")
@@ -654,8 +739,10 @@ class AutoAdjustAgent:
             imgsz = int(params.get("imgsz", 640))
             device = params.get("device", "cuda:0")
 
-            new_task_id = f"train_{uuid.uuid4().hex[:8]}"
+            new_task_id = new_task_id or f"train_{uuid.uuid4().hex[:8]}"
 
+            if lease_refresh:
+                lease_refresh()
             with httpx.Client(timeout=15.0) as client:
                 require_operation_allowed(
                     "gpu_training_submit",
@@ -725,9 +812,31 @@ class AutoAdjustAgent:
                     detail=f"{new_training_task_id} pseudo_labels={len(filtered)}",
                 ),
             )
+            event_state = append_task_event(
+                r.hgetall(f"agent:{self.task_id}"),
+                source=self.training_task_id,
+                target=new_training_task_id,
+                relation="data_expansion_retry",
+                node_type="auto_adjust",
+                label="data_expansion",
+                metadata={
+                    "proposal_id": proposal.get("proposal_id") if proposal else None,
+                    "commit_id": proposal.get("commit_id") if proposal else None,
+                    "round": expansion_round,
+                    "pseudo_labels": len(filtered),
+                    "expanded_yaml": expanded_yaml,
+                },
+            )
+            r.hset(f"agent:{self.task_id}", mapping={"event_graph": json.dumps(event_state.get("event_graph", {}))})
 
             print(f"[AutoAdjust] Level 3 complete: new task={new_task_id}, "
                   f"pseudo_labels={len(filtered)}, yaml={expanded_yaml}")
+            return {
+                "new_task_id": new_task_id,
+                "new_training_task_id": new_training_task_id,
+                "expanded_yaml": expanded_yaml,
+                "pseudo_labels": len(filtered),
+            }
 
         except Exception as e:
             print(f"[AutoAdjust] Level 3 failed: {e}")
@@ -773,3 +882,6 @@ class AutoAdjustAgent:
                 "error": str(e),
                 "timestamp": datetime.now().isoformat(),
             })
+            if raise_on_error:
+                raise
+            return None

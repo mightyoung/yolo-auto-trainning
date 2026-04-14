@@ -59,6 +59,19 @@ from .worker_memory import (
     build_attempt_record,
     sanitize_training_status,
 )
+from .strategy_governor import (
+    DEFAULT_STRATEGY_BUDGET,
+    acquire_governor_lease,
+    allocate_strategy_sequence,
+    clear_pending_strategy_proposal,
+    commit_strategy_proposal,
+    finalize_commit_record,
+    get_pending_strategy_proposal,
+    mark_governor_terminal,
+    recover_pending_commit_records,
+    refresh_governor_lease,
+    release_governor_lease,
+)
 try:
     from ..api.task_registry import append_task_event
 except ImportError:  # pragma: no cover - compatibility with direct package imports
@@ -492,6 +505,267 @@ class YOLOTrainingOrchestrator:
                 ),
             )
 
+    def _build_governor_child_id(self, task_id: str, proposal_id: str) -> str:
+        """Build a deterministic child training task id for a committed strategy change."""
+        return f"train_{task_id[:8]}_{proposal_id[:8]}"
+
+    def _record_strategy_event(
+        self,
+        redis_client,
+        task_id: str,
+        *,
+        relation: str,
+        training_task_id: str,
+        label: str,
+        metadata: dict,
+    ) -> None:
+        """Append canonical strategy events and mirror durable ledger into agent state."""
+        event_state = append_task_event(
+            redis_client.hgetall(f"agent:{task_id}"),
+            source=training_task_id,
+            target=task_id,
+            relation=relation,
+            node_type="strategy",
+            label=label,
+            metadata=metadata,
+        )
+        redis_client.hset(
+            f"agent:{task_id}",
+            mapping={
+                "event_graph": json.dumps(event_state.get("event_graph", {})),
+                "strategy_ledger": json.dumps(event_state.get("strategy_ledger", [])),
+            },
+        )
+
+    def _record_strategy_stop(
+        self,
+        redis_client,
+        task_id: str,
+        *,
+        training_task_id: str,
+        label: str,
+        stop_reason: str,
+        proposal: dict | None = None,
+    ) -> None:
+        """Append the final durable stop event required by the approved plan."""
+        sequence = allocate_strategy_sequence(redis_client, task_id)
+        metadata = {
+            "proposal_id": (proposal or {}).get("proposal_id"),
+            "commit_id": (proposal or {}).get("commit_id") or (proposal or {}).get("proposal_id"),
+            "parent_run_id": task_id,
+            "child_training_task_id": (proposal or {}).get("child_training_task_id") or training_task_id,
+            "sequence": sequence,
+            "trigger_signal": (proposal or {}).get("trigger_signal") or {},
+            "rationale": (proposal or {}).get("rationale", ""),
+            "change_set": (proposal or {}).get("change_set") or {},
+            "decision": "stopped",
+            "stop_reason": stop_reason,
+            "timestamp": datetime.now().isoformat(),
+        }
+        self._record_strategy_event(
+            redis_client,
+            task_id,
+            relation="strategy_stop",
+            training_task_id=training_task_id,
+            label=label,
+            metadata=metadata,
+        )
+
+    def _recover_pending_governor_effects(self, redis_client, task_id: str) -> None:
+        """Fail closed if the parent run has stranded pending commit records."""
+        pending_records = recover_pending_commit_records(redis_client, task_id)
+        if not pending_records:
+            return
+        record = pending_records[0]
+        finalize_commit_record(
+            redis_client,
+            parent_run_id=task_id,
+            proposal_id=record["proposal_id"],
+            status="finalized",
+            extra={"decision": "fail_closed", "stop_reason": "pending_effects_recovery"},
+        )
+        self._record_strategy_event(
+            redis_client,
+            task_id,
+            relation="strategy_stop",
+            training_task_id=record.get("child_training_task_id") or task_id,
+            label="pending_effects_recovery",
+            metadata={
+                **record,
+                "sequence": allocate_strategy_sequence(redis_client, task_id),
+                "decision": "fail_closed",
+                "stop_reason": "pending_effects_recovery",
+                "timestamp": datetime.now().isoformat(),
+            },
+        )
+        redis_client.hset(
+            f"agent:{task_id}",
+            mapping={
+                "status": "failed",
+                "error": "Governor recovery found pending_effects and failed closed",
+                "completed_at": datetime.now().isoformat(),
+            },
+        )
+        mark_governor_terminal(redis_client, task_id, "pending_effects_recovery")
+
+    def _commit_strategy_action(
+        self,
+        *,
+        task_id: str,
+        training_task_id: str,
+        proposal: dict,
+        auto_adjust_agent: AutoAdjustAgent,
+        client,
+        redis_client,
+        lease_owner: str,
+    ) -> str | None:
+        """Commit a pending strategy proposal as the single Business-side writer."""
+        action = proposal.get("action")
+        proposal_id = proposal["proposal_id"]
+        next_training_task_id = self._build_governor_child_id(task_id, proposal_id)
+        gate = commit_strategy_proposal(
+            redis_client,
+            parent_run_id=task_id,
+            proposal=proposal,
+            child_training_task_id=next_training_task_id,
+            budget_limit=DEFAULT_STRATEGY_BUDGET,
+        )
+        if not gate.get("ok"):
+            reason = gate.get("error", "rejected")
+            if reason in {"budget_exhausted", "terminal"}:
+                self._record_strategy_stop(
+                    redis_client,
+                    task_id,
+                    training_task_id=training_task_id,
+                    label=action or "stopped",
+                    stop_reason=reason,
+                    proposal={**proposal, "commit_id": proposal_id},
+                )
+                mark_governor_terminal(redis_client, task_id, reason)
+                redis_client.hset(
+                    f"agent:{task_id}",
+                    mapping={
+                        "status": "failed",
+                        "error": f"Governor stopped strategy changes: {reason}",
+                        "completed_at": datetime.now().isoformat(),
+                    },
+                )
+            clear_pending_strategy_proposal(redis_client, task_id, proposal_id)
+            return None
+
+        commit_record = gate["record"]
+        commit_metadata = {
+            **proposal,
+            "commit_id": proposal_id,
+            "sequence": commit_record["sequence"],
+            "child_training_task_id": next_training_task_id,
+            "decision": action,
+            "timestamp": datetime.now().isoformat(),
+        }
+        self._record_strategy_event(
+            redis_client,
+            task_id,
+            relation="strategy_change_committed",
+            training_task_id=training_task_id,
+            label=action or "committed",
+            metadata=commit_metadata,
+        )
+        redis_client.hset(
+            f"agent:{task_id}",
+            mapping={
+                "strategy_commit_count": str(gate["commit_count"]),
+                "strategy_sequence": str(commit_record["sequence"]),
+                "current_child_training_task_id": next_training_task_id,
+                "latest_strategy_commit": json.dumps(commit_metadata),
+            },
+        )
+        try:
+            client.cancel_task_sync(training_task_id)
+            self._record_strategy_event(
+                redis_client,
+                task_id,
+                relation="training_cancel_requested",
+                training_task_id=training_task_id,
+                label=action or "cancel",
+                metadata=commit_metadata,
+            )
+
+            def _lease_refresh() -> None:
+                if not refresh_governor_lease(redis_client, task_id, lease_owner, DEFAULT_LEASE_TTL_MS):
+                    raise RuntimeError("Governor lease lost during side effects")
+
+            if action == "lr_decay":
+                result = auto_adjust_agent._trigger_lr_adjustment(
+                    lr_decay_signal=proposal.get("trigger_signal") or {},
+                    decay_count=((proposal.get("trigger_signal") or {}).get("lr_decay_count") or 1),
+                    base_url=client.base_url,
+                    headers=client._get_headers(),
+                    r=redis_client,
+                    new_task_id=next_training_task_id,
+                    proposal=commit_metadata,
+                    raise_on_error=True,
+                    lease_refresh=_lease_refresh,
+                )
+            elif action == "data_expansion":
+                result = auto_adjust_agent._trigger_data_expansion(
+                    data_expansion_signal=proposal.get("trigger_signal") or {},
+                    base_url=client.base_url,
+                    headers=client._get_headers(),
+                    r=redis_client,
+                    new_task_id=next_training_task_id,
+                    proposal=commit_metadata,
+                    raise_on_error=True,
+                    lease_refresh=_lease_refresh,
+                )
+            else:
+                raise RuntimeError(f"Unsupported strategy action: {action}")
+            if not result:
+                raise RuntimeError(f"side_effect_failed: empty result for {action}")
+        except Exception as exc:
+            finalize_commit_record(
+                redis_client,
+                parent_run_id=task_id,
+                proposal_id=proposal_id,
+                status="finalized",
+                extra={"decision": "fail_closed", "error": str(exc)},
+            )
+            self._record_strategy_stop(
+                redis_client,
+                task_id,
+                training_task_id=training_task_id,
+                label=action or "failed",
+                stop_reason="side_effect_failed",
+                proposal=commit_metadata,
+            )
+            mark_governor_terminal(redis_client, task_id, "side_effect_failed")
+            clear_pending_strategy_proposal(redis_client, task_id, proposal_id)
+            raise RuntimeError(f"side_effect_failed: {exc}") from exc
+
+        finalize_commit_record(
+            redis_client,
+            parent_run_id=task_id,
+            proposal_id=proposal_id,
+            status="effects_done",
+            extra={
+                "decision": action,
+                "child_training_task_id": (result or {}).get("new_training_task_id", next_training_task_id),
+            },
+        )
+        finalize_commit_record(
+            redis_client,
+            parent_run_id=task_id,
+            proposal_id=proposal_id,
+            status="finalized",
+            extra={
+                "decision": action,
+                "child_training_task_id": (result or {}).get("new_training_task_id", next_training_task_id),
+            },
+        )
+        clear_pending_strategy_proposal(redis_client, task_id, proposal_id)
+        effective_training_task_id = (result or {}).get("new_training_task_id", next_training_task_id)
+        auto_adjust_agent.update_training_task_id(effective_training_task_id)
+        return effective_training_task_id
+
     def _poll_training(self, task_id: str, training_task_id: str, client) -> None:
         """Poll Training API for training completion and update Redis.
 
@@ -501,16 +775,30 @@ class YOLOTrainingOrchestrator:
         max_wait = 7200  # 2 hours max
         start = time.time()
         r = self._get_redis()
+        lease_owner = f"{task_id}:{uuid.uuid4().hex[:8]}"
         _expansion_notified = False  # Track if we've already triggered dataset search for this request
 
-        # Spawn AutoAdjustAgent for autonomous plateau-breaking
-        auto_adjust_agent = AutoAdjustAgent(task_id=task_id, training_task_id=training_task_id)
+        if not acquire_governor_lease(r, task_id, lease_owner):
+            r.hset(f"agent:{task_id}", mapping={
+                "status": "failed",
+                "error": "Governor lease acquisition failed",
+                "completed_at": datetime.now().isoformat(),
+            })
+            return
+
+        self._recover_pending_governor_effects(r, task_id)
+
+        # Spawn AutoAdjustAgent for proposal-only plateau detection
+        auto_adjust_agent = AutoAdjustAgent(task_id=task_id, training_task_id=training_task_id, proposal_only=True)
         auto_adjust_agent.start()
 
         try:
             while time.time() - start < max_wait:
                 time.sleep(30)
                 try:
+                    if not refresh_governor_lease(r, task_id, lease_owner):
+                        raise RuntimeError("Governor lease lost during poll loop")
+
                     # Use sync client to avoid asyncio.run() in thread
                     status_data = client.get_task_status_sync(training_task_id)
                     status_summary = sanitize_training_status(status_data)
@@ -581,10 +869,34 @@ class YOLOTrainingOrchestrator:
                         stage_mAP_str = f", mAP50={curriculum_stage_mAP:.4f}" if curriculum_stage_mAP else ""
                         print(f"[CURRICULUM] Task {task_id}: {curriculum_stage}{stage_mAP_str}, progress={progress:.1f}%")
 
+                    pending_proposal = get_pending_strategy_proposal(r, task_id)
+                    if pending_proposal and pending_proposal.get("child_training_task_id") == training_task_id:
+                        new_training_task_id = self._commit_strategy_action(
+                            task_id=task_id,
+                            training_task_id=training_task_id,
+                            proposal=pending_proposal,
+                            auto_adjust_agent=auto_adjust_agent,
+                            client=client,
+                            redis_client=r,
+                            lease_owner=lease_owner,
+                        )
+                        if new_training_task_id:
+                            training_task_id = new_training_task_id
+                            _expansion_notified = False
+                            continue
+
                     r.hset(f"agent:{task_id}", mapping=redis_mapping)
 
                     if status in ("completed", "success"):
                         auto_adjust_agent.stop()
+                        self._record_strategy_stop(
+                            r,
+                            task_id,
+                            training_task_id=training_task_id,
+                            label="training_completed",
+                            stop_reason="training_completed",
+                        )
+                        mark_governor_terminal(r, task_id, "training_completed")
                         model_path = status_data.get("model_path", "/home/wangxin/runs/train/weights/best.pt")
                         append_agent_attempt(
                             r,
@@ -633,6 +945,14 @@ class YOLOTrainingOrchestrator:
                         return
                     elif status in ("failed", "error"):
                         auto_adjust_agent.stop()
+                        self._record_strategy_stop(
+                            r,
+                            task_id,
+                            training_task_id=training_task_id,
+                            label="training_failed",
+                            stop_reason="training_failed",
+                        )
+                        mark_governor_terminal(r, task_id, "training_failed")
                         append_agent_attempt(
                             r,
                             task_id,
@@ -675,6 +995,8 @@ class YOLOTrainingOrchestrator:
                         )
                         return
                 except Exception as e:
+                    if "Governor lease lost" in str(e) or "side_effect_failed" in str(e) or "Unsupported strategy action" in str(e):
+                        raise
                     append_agent_attempt(
                         r,
                         task_id,
@@ -705,6 +1027,14 @@ class YOLOTrainingOrchestrator:
 
             # Timeout
             auto_adjust_agent.stop()
+            self._record_strategy_stop(
+                r,
+                task_id,
+                training_task_id=training_task_id,
+                label="training_timeout",
+                stop_reason="training_timeout",
+            )
+            mark_governor_terminal(r, task_id, "training_timeout")
             append_agent_attempt(
                 r,
                 task_id,
@@ -737,6 +1067,14 @@ class YOLOTrainingOrchestrator:
         except Exception as e:
             # Top-level: prevent thread from crashing silently
             auto_adjust_agent.stop()
+            self._record_strategy_stop(
+                r,
+                task_id,
+                training_task_id=training_task_id,
+                label="polling_crashed",
+                stop_reason="polling_crashed",
+            )
+            mark_governor_terminal(r, task_id, "polling_crashed")
             append_agent_attempt(
                 r,
                 task_id,
@@ -766,6 +1104,8 @@ class YOLOTrainingOrchestrator:
                     error=str(e),
                 ),
             )
+        finally:
+            release_governor_lease(r, task_id, lease_owner)
 
     def _auto_export_and_deploy(self, task_id: str, model_path: str, project_name: str) -> None:
         """Automatically export and deploy after training completes."""

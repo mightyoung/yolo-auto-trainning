@@ -127,3 +127,79 @@ def test_training_task_store_appends_event_graph(training_modules):
     persisted = json.loads(fake_redis.get("training:task:task-3"))
     assert updated["event_graph"]["latest_edge"]["type"] == "training_started"
     assert persisted["event_graph"]["latest_edge"]["target"] == "task-3:running"
+
+
+def test_business_task_registry_materializes_strategy_ledger(business_modules):
+    task_registry, _ = business_modules
+
+    record = task_registry.build_task_record(
+        task_id="task-ledger",
+        task_type="training",
+        user_id="user-1",
+        submission={"model": "yolo11m", "epochs": 100},
+    )
+    record = task_registry.append_task_event(
+        record,
+        source="train-1",
+        target="task-ledger",
+        relation="strategy_change_proposed",
+        node_type="strategy",
+        label="lr_decay",
+        metadata={
+            "proposal_id": "proposal-1",
+            "parent_run_id": "task-ledger",
+            "child_training_task_id": "train-1",
+            "trigger_signal": {"lr_decay_count": 1},
+            "rationale": "selected=lr_decay",
+            "change_set": {"action": "lr_decay"},
+            "decision": "lr_decay",
+            "timestamp": "2026-04-14T09:45:00",
+        },
+    )
+    record = task_registry.append_task_event(
+        record,
+        source="train-1",
+        target="task-ledger",
+        relation="strategy_change_committed",
+        node_type="strategy",
+        label="lr_decay",
+        metadata={
+            "proposal_id": "proposal-1",
+            "commit_id": "proposal-1",
+            "parent_run_id": "task-ledger",
+            "child_training_task_id": "train-next",
+            "sequence": 1,
+            "trigger_signal": {"lr_decay_count": 1},
+            "rationale": "selected=lr_decay",
+            "change_set": {"action": "lr_decay"},
+            "decision": "lr_decay",
+            "timestamp": "2026-04-14T09:46:00",
+        },
+    )
+    record = task_registry.append_task_event(
+        record,
+        source="train-next",
+        target="task-ledger",
+        relation="strategy_stop",
+        node_type="strategy",
+        label="budget_exhausted",
+        metadata={
+            "proposal_id": "proposal-1",
+            "commit_id": "proposal-1",
+            "parent_run_id": "task-ledger",
+            "child_training_task_id": "train-next",
+            "sequence": 2,
+            "trigger_signal": {},
+            "rationale": "budget reached",
+            "change_set": {"action": "stop"},
+            "decision": "stopped",
+            "stop_reason": "budget_exhausted",
+            "timestamp": "2026-04-14T09:47:00",
+        },
+    )
+
+    assert len(record["strategy_ledger"]) == 2
+    assert record["strategy_ledger"][0]["relation"] == "strategy_change_committed"
+    assert record["strategy_ledger"][0]["sequence"] == 1
+    assert record["strategy_ledger"][1]["relation"] == "strategy_stop"
+    assert record["strategy_ledger"][1]["stop_reason"] == "budget_exhausted"

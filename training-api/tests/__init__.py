@@ -1,1 +1,0 @@
-# Training API Tests

@@ -2,21 +2,53 @@
 
 from __future__ import annotations
 
+import importlib.util
 import json
 from datetime import datetime
+from pathlib import Path
 
 try:
     from ..agents.event_graph import append_graph_event, normalize_event_graph
 except ImportError:  # pragma: no cover - compatibility with direct package imports
-    from agents.event_graph import append_graph_event, normalize_event_graph
+    try:
+        from agents.event_graph import append_graph_event, normalize_event_graph
+    except ImportError:  # pragma: no cover - compatibility with synthetic src package tests
+        _event_graph_path = Path(__file__).resolve().parent.parent / "agents" / "event_graph.py"
+        _spec = importlib.util.spec_from_file_location("business_api_event_graph", _event_graph_path)
+        if _spec is None or _spec.loader is None:  # pragma: no cover - defensive guard
+            raise
+        _module = importlib.util.module_from_spec(_spec)
+        _spec.loader.exec_module(_module)
+        append_graph_event = _module.append_graph_event
+        normalize_event_graph = _module.normalize_event_graph
 from .task_models import ExportStatusResponse, TrainStatusResponse
 
 TASK_TTL_SECONDS = 7 * 24 * 60 * 60
 
 # Schema version for Redis task records
 # Increment this when the schema changes and add migration logic below
-CURRENT_SCHEMA_VERSION = "v3"
+CURRENT_SCHEMA_VERSION = "v4"
 TASK_TERMINAL_STATUSES = frozenset({"completed", "failed", "cancelled"})
+STRATEGY_EVENT_RELATIONS = frozenset({
+    "strategy_change_proposed",
+    "strategy_change_committed",
+    "strategy_stop",
+    "training_cancel_requested",
+})
+LEDGER_EVENT_RELATIONS = frozenset({"strategy_change_committed", "strategy_stop"})
+STRATEGY_METADATA_KEYS = (
+    "proposal_id",
+    "commit_id",
+    "parent_run_id",
+    "child_training_task_id",
+    "sequence",
+    "trigger_signal",
+    "rationale",
+    "change_set",
+    "decision",
+    "stop_reason",
+    "timestamp",
+)
 
 
 # ==================== Task State Machine ====================
@@ -144,28 +176,93 @@ def migrate_task_record(task_data: dict) -> dict:
     if schema_version == CURRENT_SCHEMA_VERSION:
         return task_data
 
-    # Migration: legacy/v1/v2 -> v3
-    if schema_version in {"legacy", "v1", "v2"}:
+    # Migration: legacy/v1/v2/v3 -> v4
+    if schema_version in {"legacy", "v1", "v2", "v3"}:
         # Legacy records had "params" instead of "submission"
         if "params" in task_data and "submission" not in task_data:
             task_data["submission"] = task_data.pop("params")
         task_data.setdefault("attempt_memory", [])
         task_data.setdefault("latest_attempt", None)
         task_data.setdefault("event_graph", {})
+        task_data.setdefault("strategy_ledger", [])
         task_data["schema_version"] = CURRENT_SCHEMA_VERSION
         return task_data
 
     # If we don't know the schema version, try to normalize what we can
-    if schema_version not in (CURRENT_SCHEMA_VERSION, "legacy", "v1", "v2"):
+    if schema_version not in (CURRENT_SCHEMA_VERSION, "legacy", "v1", "v2", "v3"):
         # Normalize fields but don't recursively call migrate
         if "params" in task_data and "submission" not in task_data:
             task_data["submission"] = task_data.pop("params")
         task_data.setdefault("attempt_memory", [])
         task_data.setdefault("latest_attempt", None)
         task_data.setdefault("event_graph", {})
+        task_data.setdefault("strategy_ledger", [])
         task_data["schema_version"] = CURRENT_SCHEMA_VERSION
 
     return task_data
+
+
+def normalize_strategy_ledger(ledger: list | None) -> list[dict]:
+    """Normalize a durable strategy ledger to a stable, ordered list."""
+    entries: list[dict] = []
+    for raw_entry in ledger or []:
+        if not isinstance(raw_entry, dict):
+            continue
+        entry = {
+            key: raw_entry.get(key)
+            for key in STRATEGY_METADATA_KEYS
+        }
+        relation = raw_entry.get("relation")
+        if relation in LEDGER_EVENT_RELATIONS:
+            entry["relation"] = relation
+            entries.append(entry)
+
+    entries.sort(key=lambda item: (item.get("sequence") or 0, item.get("timestamp") or ""))
+    return entries
+
+
+def _normalize_strategy_metadata(
+    relation: str,
+    metadata: dict | None,
+    task_data: dict,
+    *,
+    source: str,
+    target: str,
+) -> dict:
+    """Fill canonical strategy-event metadata fields without dropping caller data."""
+    normalized = dict(metadata or {})
+    submission = dict(task_data.get("submission") or {})
+    parent_run_id = normalized.get("parent_run_id") or task_data.get("task_id") or target
+    normalized.setdefault("proposal_id", None)
+    normalized.setdefault("commit_id", normalized.get("proposal_id"))
+    normalized.setdefault("parent_run_id", parent_run_id)
+    normalized.setdefault("child_training_task_id", normalized.get("child_training_task_id") or source)
+    normalized.setdefault("sequence", None)
+    normalized.setdefault("trigger_signal", normalized.get("trigger_signal") or {})
+    normalized.setdefault("rationale", normalized.get("rationale") or "")
+    normalized.setdefault("change_set", normalized.get("change_set") or {})
+    normalized.setdefault("decision", normalized.get("decision") or relation)
+    normalized.setdefault("stop_reason", normalized.get("stop_reason"))
+    normalized.setdefault("timestamp", normalized.get("timestamp") or datetime.now().isoformat())
+    if not normalized.get("change_set") and submission:
+        normalized["change_set"] = {
+            key: submission.get(key)
+            for key in ("model", "epochs", "imgsz", "batch", "device", "data_yaml")
+            if submission.get(key) is not None
+        }
+    return normalized
+
+
+def _append_strategy_ledger_entry(task_data: dict, relation: str, metadata: dict) -> dict:
+    """Append committed strategy events and stop markers to the durable ledger."""
+    if relation not in LEDGER_EVENT_RELATIONS:
+        return task_data
+
+    normalized = normalize_task_record(task_data) or {}
+    ledger = list(normalized.get("strategy_ledger") or [])
+    ledger.append({"relation": relation, **metadata})
+    normalized["strategy_ledger"] = normalize_strategy_ledger(ledger)
+    return normalized
 
 
 def normalize_task_record(task_data: dict | None) -> dict | None:
@@ -201,6 +298,7 @@ def normalize_task_record(task_data: dict | None) -> dict | None:
     normalized["attempt_memory"] = list(normalized.get("attempt_memory") or [])
     normalized["latest_attempt"] = normalized.get("latest_attempt")
     normalized["event_graph"] = normalize_event_graph(normalized.get("event_graph"))
+    normalized["strategy_ledger"] = normalize_strategy_ledger(normalized.get("strategy_ledger"))
     normalized["output_path"] = normalized.get("output_path")
     normalized["output_offset"] = int(normalized.get("output_offset") or 0)
     normalized["output_summary"] = normalized.get("output_summary")
@@ -236,6 +334,7 @@ def build_task_record(
             "attempt_memory": [],
             "latest_attempt": None,
             "event_graph": {},
+            "strategy_ledger": [],
             "output_path": None,
             "output_offset": 0,
             "output_summary": None,
@@ -267,6 +366,15 @@ def append_task_event(
 ) -> dict:
     """Append a bounded graph event to a task record."""
     normalized = normalize_task_record(task_data) or {}
+    event_metadata = metadata
+    if relation in STRATEGY_EVENT_RELATIONS:
+        event_metadata = _normalize_strategy_metadata(
+            relation,
+            metadata,
+            normalized,
+            source=source,
+            target=target,
+        )
     normalized["event_graph"] = append_graph_event(
         normalized.get("event_graph"),
         source=source,
@@ -274,9 +382,11 @@ def append_task_event(
         relation=relation,
         node_type=node_type,
         label=label,
-        metadata=metadata,
+        metadata=event_metadata,
         target_metadata=target_metadata,
     )
+    if relation in STRATEGY_EVENT_RELATIONS:
+        normalized = _append_strategy_ledger_entry(normalized, relation, event_metadata or {})
     return normalized
 
 

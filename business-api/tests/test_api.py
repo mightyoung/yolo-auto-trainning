@@ -86,6 +86,28 @@ class TestTrainingClient:
             result = await client.health_check()
             assert result is True
 
+    def test_cancel_task_sync(self):
+        """Synchronous cancel path is available for governor commit flows."""
+        from src.api.training_client import TrainingAPIClient
+
+        with patch('httpx.Client') as mock_client:
+            mock_response = Mock()
+            mock_response.json.return_value = {
+                "task_id": "test_123",
+                "status": "cancelled",
+            }
+            mock_response.raise_for_status = Mock()
+            mock_client.return_value.__enter__.return_value.post.return_value = mock_response
+
+            client = TrainingAPIClient(
+                base_url="http://localhost:8001",
+                api_key="test-key"
+            )
+
+            result = client.cancel_task_sync("test_123")
+
+            assert result["status"] == "cancelled"
+
 
 class TestDataEndpoints:
     """Test Data API endpoints."""

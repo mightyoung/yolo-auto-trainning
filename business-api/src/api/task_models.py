@@ -77,6 +77,7 @@ class TaskRecordResponse(BaseModel):
     execution: dict[str, Any] | None = None
     result: dict[str, Any] | None = None
     result_summary: dict[str, Any] | None = None
+    strategy_ledger: list[dict[str, Any]] = Field(default_factory=list)
     output_path: str | None = None
     output_offset: int | None = None
     output_summary: str | None = None

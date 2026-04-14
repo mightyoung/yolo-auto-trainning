@@ -384,6 +384,19 @@ class TrainingAPIClient:
             response.raise_for_status()
             return response.json()
 
+    def cancel_task_sync(self, task_id: str) -> dict[str, Any]:
+        """
+        Synchronous version of cancel_task.
+        Safe to call from background threads and governor commit paths.
+        """
+        with httpx.Client(timeout=30) as client:
+            response = client.post(
+                f"{self.base_url}/api/v1/internal/train/cancel/{task_id}",
+                headers=self._get_headers()
+            )
+            response.raise_for_status()
+            return response.json()
+
     async def health_check(self) -> bool:
         """
         Check if the training API is available.
